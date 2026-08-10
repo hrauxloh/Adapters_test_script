@@ -1,0 +1,1 @@
+# Adapters_test_script
