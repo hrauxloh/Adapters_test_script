@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
@@ -22,12 +23,63 @@ from data import load_split
 from inspect_fusion import MODEL_NAME, load_trained_model
 
 
+def write_summary(path, args, best_config, calibration, metrics, confidences, correct):
+    lines = [
+        "# Polarization fusion model — final test evaluation",
+        "",
+        f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"Test file: `{args.test_file}` (n={metrics['n']})",
+        "",
+        "## Training configuration",
+        "",
+    ]
+    if best_config is not None:
+        lines += [f"- `{key}`: {value}" for key, value in best_config.items()]
+    else:
+        lines.append("(no best_config.json found alongside the model — settings used are unknown)")
+
+    lines += [
+        "",
+        "## Calibration",
+        "",
+        f"- temperature: {calibration['temperature']:.4f}",
+        f"- decision threshold: {calibration['threshold']:.2f}",
+        "",
+        "## Final test metrics",
+        "",
+        f"- accuracy: {metrics['accuracy']:.3f}",
+        f"- precision: {metrics['precision']:.3f}",
+        f"- recall: {metrics['recall']:.3f}",
+        f"- f1: {metrics['f1']:.3f}",
+        "",
+        "## Confidence calibration on the test set",
+        "",
+    ]
+    if correct.any():
+        lines.append(f"- avg confidence when correct: {confidences[correct].mean():.3f}")
+    if (~correct).any():
+        lines.append(f"- avg confidence when incorrect: {confidences[~correct].mean():.3f}")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="output")
     parser.add_argument("--test-file", default="eng_test.csv")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-length", type=int, default=96)
+    parser.add_argument(
+        "--summary-out",
+        default=None,
+        help="Where to write a markdown summary of this run. Defaults to <output-dir>/summary.md.",
+    )
+    parser.add_argument(
+        "--best-config",
+        default="best_config.json",
+        help="Path to the config sweep.py wrote out, included in the summary if it exists.",
+    )
     args = parser.parse_args()
 
     with open(f"{args.output_dir}/calibration.json") as f:
@@ -61,6 +113,24 @@ def main():
         print(f"  avg confidence when correct:   {confidences[correct].mean():.3f}")
     if (~correct).any():
         print(f"  avg confidence when incorrect: {confidences[~correct].mean():.3f}")
+
+    best_config = None
+    try:
+        with open(args.best_config) as f:
+            best_config = json.load(f)
+    except FileNotFoundError:
+        pass
+
+    summary_path = args.summary_out or f"{args.output_dir}/summary.md"
+    metrics = {
+        "n": len(labels),
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
+    write_summary(summary_path, args, best_config, calibration, metrics, confidences, correct)
+    print(f"\nSaved summary to {summary_path}")
 
 
 if __name__ == "__main__":

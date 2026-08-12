@@ -151,6 +151,14 @@ the reason the test set was held out in the first place — if changes are
 needed, they belong before this step, using the validation split, not
 after it.
 
+It also writes a `summary.md` to `<output-dir>` (so if `--output-dir`
+points into a mounted Google Drive folder, the summary is saved there
+automatically) with the winning `best_config.json` settings, the
+calibration values, and the final metrics — a single record of the whole
+run. Re-running `evaluate_test.py` just regenerates this file from the
+same already-trained model and already-fit calibration; it doesn't re-tune
+anything, so it's safe to run again purely to (re)produce the summary.
+
 ### Running the whole pipeline
 
 ```bash
