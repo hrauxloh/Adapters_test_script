@@ -1,6 +1,7 @@
 """Inspect a trained AdapterFusion model: for each transformer layer, how much
 weight the fusion layer assigned to the sst2 adapter vs. the emotion adapter
-when making its polarization predictions.
+when making its polarization predictions, and how confident the model was on
+correct vs. incorrect predictions.
 
 Usage:
     python inspect_fusion.py --output-dir output --data-file eng_test.csv
@@ -42,6 +43,7 @@ def main():
     parser.add_argument("--data-file", default="eng_test.csv")
     parser.add_argument("--num-examples", type=int, default=200)
     parser.add_argument("--show-examples", type=int, default=15)
+    parser.add_argument("--show-misclassified", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-length", type=int, default=96)
     args = parser.parse_args()
@@ -59,6 +61,7 @@ def main():
     layer_token_counts = {}
     per_example_weights = []
     preds = []
+    confidences = []
 
     for start in range(0, n, args.batch_size):
         batch_texts = texts[start : start + args.batch_size]
@@ -72,7 +75,11 @@ def main():
         with torch.no_grad():
             outputs = model(**encodings, output_adapter_fusion_attentions=True)
 
-        preds.extend(outputs.logits.argmax(dim=-1).tolist())
+        batch_probs = torch.softmax(outputs.logits, dim=-1).numpy()  # [batch, num_labels]
+        batch_preds = batch_probs.argmax(axis=-1)
+        preds.extend(batch_preds.tolist())
+        confidences.extend(batch_probs[np.arange(len(batch_preds)), batch_preds].tolist())
+
         mask = encodings["attention_mask"].numpy().astype(bool)  # [batch, seq]
         fusion_attn = outputs.adapter_fusion_attentions[FUSION_KEY]
 
@@ -100,11 +107,39 @@ def main():
 
     print()
     print(f"Per-example fusion weight, averaged across all layers (first {args.show_examples} shown):")
-    print(f"{'label':>6} {'pred':>6} {SST2_NAME:>10} {EMOTION_NAME:>10}  text")
+    print(f"{'label':>6} {'pred':>6} {'conf':>6} {SST2_NAME:>10} {EMOTION_NAME:>10}  text")
     for i in range(min(args.show_examples, n)):
         w = per_example_weights[i]
         text_preview = texts[i][:60].replace("\n", " ")
-        print(f"{labels[i]:>6} {preds[i]:>6} {w[0]:>10.3f} {w[1]:>10.3f}  {text_preview}")
+        print(f"{labels[i]:>6} {preds[i]:>6} {confidences[i]:>6.3f} {w[0]:>10.3f} {w[1]:>10.3f}  {text_preview}")
+
+    labels_arr = np.array(labels)
+    preds_arr = np.array(preds)
+    confidences_arr = np.array(confidences)
+    correct = labels_arr == preds_arr
+
+    print()
+    print(f"Prediction confidence (the model's own probability for whichever class it picked):")
+    print(f"  overall accuracy on these {n} examples: {correct.mean():.3f}")
+    if correct.any():
+        print(f"  avg confidence when CORRECT:   {confidences_arr[correct].mean():.3f}")
+    if (~correct).any():
+        print(f"  avg confidence when INCORRECT: {confidences_arr[~correct].mean():.3f}")
+    print(
+        "  (if these two numbers are close, the model is often 'confidently wrong' rather than\n"
+        "   just uncertain on hard cases)"
+    )
+
+    print()
+    misclassified = np.where(~correct)[0]
+    order = misclassified[np.argsort(-confidences_arr[misclassified])]
+    show_n = min(args.show_misclassified, len(order))
+    print(f"Most confidently WRONG examples ({show_n} of {len(misclassified)} misclassified shown):")
+    print(f"{'label':>6} {'pred':>6} {'conf':>6} {SST2_NAME:>10} {EMOTION_NAME:>10}  text")
+    for i in order[:show_n]:
+        w = per_example_weights[i]
+        text_preview = texts[i][:60].replace("\n", " ")
+        print(f"{labels[i]:>6} {preds[i]:>6} {confidences[i]:>6.3f} {w[0]:>10.3f} {w[1]:>10.3f}  {text_preview}")
 
 
 if __name__ == "__main__":

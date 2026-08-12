@@ -51,4 +51,12 @@ This reloads the trained fusion + head, runs it over test examples with
 fusion layer assigned to the `sst2` adapter vs. the `emotion` adapter —
 both averaged per transformer layer, and per individual example. Weights
 are a softmax over the two adapters, so they always sum to ~1 per token.
-Useful flags: `--num-examples`, `--show-examples`, `--batch-size`.
+
+It also reports the model's own prediction confidence (softmax
+probability of its predicted class), split into average confidence on
+correct vs. incorrect predictions, and lists the misclassified examples
+the model was *most* confident about — useful for spotting cases where
+it's confidently wrong rather than just uncertain on hard examples.
+
+Useful flags: `--num-examples`, `--show-examples`, `--show-misclassified`,
+`--batch-size`.
