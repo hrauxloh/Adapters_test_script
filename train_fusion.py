@@ -9,6 +9,7 @@ Usage:
 import argparse
 
 import numpy as np
+import torch
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from transformers import AutoTokenizer, TrainingArguments
 from adapters import AutoAdapterModel, AdapterTrainer, Fuse
@@ -63,11 +64,22 @@ def main():
     parser.add_argument("--train-file", default="eng_train.csv")
     parser.add_argument("--test-file", default="eng_test.csv")
     parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--max-length", type=int, default=256)
+    parser.add_argument("--max-length", type=int, default=96)
+    parser.add_argument(
+        "--fp16",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use fp16 mixed precision training. Defaults to on when a GPU is available.",
+    )
     args = parser.parse_args()
+
+    use_fp16 = args.fp16 if args.fp16 is not None else torch.cuda.is_available()
+    if args.fp16 and not torch.cuda.is_available():
+        print("Warning: --fp16 requested but no GPU is available; running in full precision.")
+        use_fp16 = False
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
@@ -87,6 +99,8 @@ def main():
         logging_steps=50,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
+        fp16=use_fp16,
+        dataloader_num_workers=2,
         report_to="none",
     )
 
