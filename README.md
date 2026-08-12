@@ -37,3 +37,18 @@ training, and the trained fusion layer + head are saved under
 
 Note: this requires downloading `bert-base-uncased` and the two adapters
 from the Hugging Face Hub on first run.
+
+## Inspect which adapter drove each decision
+
+After training (so `<output-dir>/fusion` and `<output-dir>/head` exist), run:
+
+```bash
+python inspect_fusion.py --output-dir output --data-file eng_test.csv
+```
+
+This reloads the trained fusion + head, runs it over test examples with
+`output_adapter_fusion_attentions=True`, and prints how much weight the
+fusion layer assigned to the `sst2` adapter vs. the `emotion` adapter —
+both averaged per transformer layer, and per individual example. Weights
+are a softmax over the two adapters, so they always sum to ~1 per token.
+Useful flags: `--num-examples`, `--show-examples`, `--batch-size`.
