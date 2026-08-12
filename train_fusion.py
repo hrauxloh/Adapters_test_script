@@ -2,8 +2,13 @@
 on top of bert-base-uncased and train the fusion + a new classification head
 to predict the binary `polarization` label.
 
+Model selection (early stopping, "best epoch") is done against a validation
+split held out from `--train-file` — NOT `eng_test.csv`. This keeps the test
+set untouched for a single final evaluation (see evaluate_test.py), instead
+of implicitly tuning to it every time a setting is changed.
+
 Usage:
-    python train_fusion.py --train-file eng_train.csv --test-file eng_test.csv
+    python train_fusion.py --train-file eng_train.csv
 """
 
 import argparse
@@ -11,10 +16,11 @@ import argparse
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from transformers import AutoTokenizer, TrainingArguments
+from sklearn.utils.class_weight import compute_class_weight
+from transformers import AutoTokenizer, EarlyStoppingCallback, TrainingArguments
 from adapters import AutoAdapterModel, AdapterTrainer, Fuse
 
-from data import load_split, tokenize_dataset
+from data import load_train_val_split, tokenize_dataset
 
 MODEL_NAME = "bert-base-uncased"
 SST2_ADAPTER = "AdapterHub/bert-base-uncased-pf-sst2"
@@ -23,6 +29,24 @@ SST2_NAME = "sst2"
 EMOTION_NAME = "emotion"
 HEAD_NAME = "polarization"
 FUSION_SETUP = Fuse(SST2_NAME, EMOTION_NAME)
+
+
+class ConfigurableLossTrainer(AdapterTrainer):
+    """AdapterTrainer with optional class-weighted / label-smoothed cross-entropy."""
+
+    def __init__(self, *args, class_weights=None, label_smoothing=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+        self.label_smoothing = label_smoothing
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.get("logits")
+        weight = self.class_weights.to(logits.device) if self.class_weights is not None else None
+        loss_fct = torch.nn.CrossEntropyLoss(weight=weight, label_smoothing=self.label_smoothing)
+        loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+        return (loss, outputs) if return_outputs else loss
 
 
 def build_model():
@@ -59,23 +83,31 @@ def compute_metrics(eval_pred):
     }
 
 
-def main():
+def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-file", default="eng_train.csv")
-    parser.add_argument("--test-file", default="eng_test.csv")
+    parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of --train-file held out for validation/early stopping.")
+    parser.add_argument("--train-fraction", type=float, default=1.0, help="Subsample the remaining training portion (after the val split) to this fraction, for cheap sweep runs.")
     parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--save-artifacts", action=argparse.BooleanOptionalAction, default=True, help="Save the trained fusion+head to --output-dir. Turn off for throwaway sweep trials.")
+    parser.add_argument("--epochs", type=int, default=10, help="Upper bound on epochs; early stopping usually stops sooner.")
+    parser.add_argument("--patience", type=int, default=2, help="Early stopping patience, in evals (epochs) without improvement.")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--max-length", type=int, default=96)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--class-weighted", action=argparse.BooleanOptionalAction, default=False, help="Weight the loss inversely to class frequency, to help the minority (polarized) class.")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--fp16",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Use fp16 mixed precision training. Defaults to on when a GPU is available.",
     )
-    args = parser.parse_args()
+    return parser
 
+
+def train_and_evaluate(args):
     use_fp16 = args.fp16 if args.fp16 is not None else torch.cuda.is_available()
     if args.fp16 and not torch.cuda.is_available():
         print("Warning: --fp16 requested but no GPU is available; running in full precision.")
@@ -83,8 +115,19 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    train_dataset = tokenize_dataset(load_split(args.train_file), tokenizer, args.max_length)
-    test_dataset = tokenize_dataset(load_split(args.test_file), tokenizer, args.max_length)
+    train_split, val_split = load_train_val_split(args.train_file, args.val_fraction, seed=args.seed)
+    if args.train_fraction < 1.0:
+        keep = int(len(train_split) * args.train_fraction)
+        train_split = train_split.shuffle(seed=args.seed).select(range(keep))
+
+    class_weights = None
+    if args.class_weighted:
+        labels_np = np.array(train_split["polarization"])
+        weights = compute_class_weight("balanced", classes=np.array([0, 1]), y=labels_np)
+        class_weights = torch.tensor(weights, dtype=torch.float)
+
+    train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length)
+    val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length)
 
     model = build_model()
 
@@ -96,30 +139,42 @@ def main():
         learning_rate=args.lr,
         eval_strategy="epoch",
         save_strategy="epoch",
+        save_total_limit=1,
         logging_steps=50,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         fp16=use_fp16,
         dataloader_num_workers=2,
+        seed=args.seed,
         report_to="none",
     )
 
-    trainer = AdapterTrainer(
+    trainer = ConfigurableLossTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=test_dataset,
+        eval_dataset=val_dataset,
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
+        class_weights=class_weights,
+        label_smoothing=args.label_smoothing,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
     )
 
     trainer.train()
-
     metrics = trainer.evaluate()
-    print("Test set metrics:", metrics)
 
-    model.save_adapter_fusion(f"{args.output_dir}/fusion", FUSION_SETUP)
-    model.save_head(f"{args.output_dir}/head", HEAD_NAME)
+    if args.save_artifacts:
+        model.save_adapter_fusion(f"{args.output_dir}/fusion", FUSION_SETUP)
+        model.save_head(f"{args.output_dir}/head", HEAD_NAME)
+
+    return metrics
+
+
+def main():
+    args = build_arg_parser().parse_args()
+    metrics = train_and_evaluate(args)
+    print("Validation metrics:", metrics)
 
 
 if __name__ == "__main__":
