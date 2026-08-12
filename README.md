@@ -60,3 +60,21 @@ it's confidently wrong rather than just uncertain on hard examples.
 
 Useful flags: `--num-examples`, `--show-examples`, `--show-misclassified`,
 `--batch-size`.
+
+## Is the adapter fusion actually helping?
+
+`train_baseline.py` trains a fresh classification head directly on frozen
+`bert-base-uncased` — no adapters, no fusion — with everything else (data,
+hyperparameters, frozen-base setup) identical to `train_fusion.py`. Run it
+the same way:
+
+```bash
+python train_baseline.py --train-file eng_train.csv --test-file eng_test.csv
+```
+
+Compare its printed `Baseline (no adapters) test set metrics: {...}` line
+against `train_fusion.py`'s `Test set metrics: {...}` line (same metrics:
+accuracy/precision/recall/F1, on the same test set). If the fusion run
+scores meaningfully higher, the sst2/emotion adapters are adding real
+value; if the two are close, the adapters aren't contributing much beyond
+what frozen BERT's own representation already captures.
