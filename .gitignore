@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 output/
 output_baseline/
+output_group/
 sweep_tmp/
 best_config.json

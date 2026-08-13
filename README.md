@@ -212,3 +212,61 @@ rather than something being iteratively tuned). If the fusion run scores
 meaningfully higher, the sst2/emotion adapters are adding real value; if
 the two are close, the adapters aren't contributing much beyond what
 frozen BERT's own representation already captures.
+
+## Training a new adapter from scratch: group identity
+
+`sst2` and `emotion` are pretrained adapters pulled from AdapterHub. There's
+no equivalent pretrained adapter for detecting whether text references a
+social/political group, so `train_group_adapter.py` trains one from
+scratch, entirely independent of the polarization task:
+
+```bash
+python train_group_adapter.py --train-file group_reference_data.csv
+```
+
+`group_reference_data.csv` (`text`, `Group_bool`) is a separate, cleaned and
+stratified-sampled dataset — unrelated to `eng_train.csv`/`eng_test.csv`,
+with its own validation split (`--val-fraction`) and early stopping, so it
+never touches the polarization test set. The new adapter uses the same
+Pfeiffer/`SeqBn` bottleneck architecture as `sst2`/`emotion`, so it's
+dimensionally compatible for fusion. Only the adapter itself is saved
+(`<output-dir>/group`) — its temporary classification head, used only to
+train it, is discarded, the same way `sst2`/`emotion` are loaded with
+`with_head=False` elsewhere in this repo.
+
+The script prints a majority-class-baseline comparison alongside its
+validation metrics, and warns explicitly if the adapter doesn't beat it —
+worth checking before using this adapter in any downstream fusion model.
+
+This adapter is a building block, not a finished result on its own: testing
+whether group identity actually matters for polarization detection (as
+opposed to sentiment or emotion) requires the full ablation set described
+in the next section, not just this one training run.
+
+## Testing which features actually matter: the ablation plan
+
+The claim "sentiment, emotion, and group identity are important features
+for detecting polarization" is stronger than what fusing all of them
+together and beating a no-adapter baseline can show — that only proves the
+combination helps, not that each one individually does, or that
+affect/identity-specific adapters are what matters rather than any diverse
+set of pretrained adapters. Properly testing the individual claim needs a
+full factorial ablation:
+
+| Adapters included | What it isolates |
+|---|---|
+| none (baseline) | Reference point — `train_baseline.py` |
+| sst2 only | Sentiment's individual contribution |
+| emotion only | Emotion's individual contribution |
+| group only | Group identity's individual contribution |
+| sst2 + emotion | Combined (the current `train_fusion.py` result) |
+| sst2 + group | Pairwise interaction |
+| emotion + group | Pairwise interaction |
+| sst2 + emotion + group | All three combined |
+| 3 unrelated-task adapters | Confound control — does *any* 3-adapter fusion help, or specifically these |
+
+`train_group_adapter.py` produces the one new reusable artifact this needs
+(the `group` adapter). Building the remaining single- and multi-adapter
+models reuses the same validation-split → sweep → calibrate →
+one-time-test-evaluate pipeline already in this repo, generalized to accept
+different adapter combinations rather than always assuming `sst2`+`emotion`.
