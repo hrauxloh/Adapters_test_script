@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 
 import numpy as np
 import torch
@@ -23,12 +24,27 @@ from adapters import AutoAdapterModel, AdapterTrainer, Fuse
 from data import load_train_val_split, tokenize_dataset
 
 MODEL_NAME = "bert-base-uncased"
-SST2_ADAPTER = "AdapterHub/bert-base-uncased-pf-sst2"
-EMOTION_ADAPTER = "AdapterHub/bert-base-uncased-pf-emotion"
-SST2_NAME = "sst2"
-EMOTION_NAME = "emotion"
 HEAD_NAME = "polarization"
-FUSION_SETUP = Fuse(SST2_NAME, EMOTION_NAME)
+DEFAULT_ADAPTERS = [
+    "sst2=AdapterHub/bert-base-uncased-pf-sst2",
+    "emotion=AdapterHub/bert-base-uncased-pf-emotion",
+]
+
+
+def parse_adapter_specs(specs):
+    """Parse ["name=source", ...] into [(name, source), ...].
+
+    `source` can be an AdapterHub/HF Hub id (e.g. AdapterHub/bert-base-uncased-pf-sst2)
+    or a local path to a previously saved adapter (e.g. output_valence/valence) —
+    model.load_adapter() already handles both transparently.
+    """
+    parsed = []
+    for spec in specs:
+        name, sep, source = spec.partition("=")
+        if not sep or not name or not source:
+            raise ValueError(f"Invalid --adapters entry {spec!r}, expected name=source")
+        parsed.append((name, source))
+    return parsed
 
 
 class ConfigurableLossTrainer(AdapterTrainer):
@@ -49,24 +65,26 @@ class ConfigurableLossTrainer(AdapterTrainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def build_model():
+def build_model(adapter_specs):
     model = AutoAdapterModel.from_pretrained(MODEL_NAME)
 
-    # Load the two pre-trained task adapters, frozen, without their original heads.
-    model.load_adapter(SST2_ADAPTER, load_as=SST2_NAME, with_head=False)
-    model.load_adapter(EMOTION_ADAPTER, load_as=EMOTION_NAME, with_head=False)
+    # Load each adapter, frozen, without its original head (if it has one).
+    for name, source in adapter_specs:
+        model.load_adapter(source, load_as=name, with_head=False)
 
-    # Add an AdapterFusion layer combining both, plus a fresh binary head for polarization.
-    model.add_adapter_fusion(FUSION_SETUP)
+    fusion_setup = Fuse(*[name for name, _ in adapter_specs])
+
+    # Add an AdapterFusion layer combining all of them, plus a fresh binary head for polarization.
+    model.add_adapter_fusion(fusion_setup)
     model.add_classification_head(HEAD_NAME, num_labels=2)
 
-    # Freeze the base model and the two source adapters; only the fusion layer
+    # Freeze the base model and the source adapters; only the fusion layer
     # and the new head remain trainable.
-    model.train_adapter_fusion(FUSION_SETUP)
-    model.set_active_adapters(FUSION_SETUP)
+    model.train_adapter_fusion(fusion_setup)
+    model.set_active_adapters(fusion_setup)
     model.active_head = HEAD_NAME
 
-    return model
+    return model, fusion_setup
 
 
 def compute_metrics(eval_pred):
@@ -97,6 +115,14 @@ def build_arg_parser():
     parser.add_argument("--max-length", type=int, default=96)
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--class-weighted", action=argparse.BooleanOptionalAction, default=False, help="Weight the loss inversely to class frequency, to help the minority (polarized) class.")
+    parser.add_argument(
+        "--adapters",
+        nargs="+",
+        default=DEFAULT_ADAPTERS,
+        help="Adapters to fuse, as name=source pairs (space-separated). Source can be an "
+        "AdapterHub/HF Hub id or a local path to a saved adapter, e.g. "
+        "valence=output_valence/valence emotion_ec=output_emotion_ec/emotion_ec",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--fp16",
@@ -129,7 +155,8 @@ def train_and_evaluate(args):
     train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length)
     val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length)
 
-    model = build_model()
+    adapter_specs = parse_adapter_specs(args.adapters)
+    model, fusion_setup = build_model(adapter_specs)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -165,8 +192,10 @@ def train_and_evaluate(args):
     metrics = trainer.evaluate()
 
     if args.save_artifacts:
-        model.save_adapter_fusion(f"{args.output_dir}/fusion", FUSION_SETUP)
+        model.save_adapter_fusion(f"{args.output_dir}/fusion", fusion_setup)
         model.save_head(f"{args.output_dir}/head", HEAD_NAME)
+        with open(f"{args.output_dir}/adapters.json", "w") as f:
+            json.dump([{"name": name, "source": source} for name, source in adapter_specs], f, indent=2)
 
     return metrics
 

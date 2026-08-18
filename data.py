@@ -56,3 +56,31 @@ def tokenize_dataset(
     dataset = dataset.rename_column(label_column, "labels")
     dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     return dataset
+
+
+def load_multilabel_split(csv_path: str, label_columns: list) -> Dataset:
+    """Read a CSV with several binary label columns (e.g. multiple emotions)
+    and combine them into a single multi-hot "labels" column.
+    """
+    df = pd.read_csv(csv_path)
+    df = df[[TEXT_COLUMN] + label_columns].dropna()
+    df[label_columns] = df[label_columns].astype("float32")
+    df["labels"] = df[label_columns].values.tolist()
+    df = df[[TEXT_COLUMN, "labels"]].reset_index(drop=True)
+    return Dataset.from_pandas(df)
+
+
+def tokenize_multilabel_dataset(dataset: Dataset, tokenizer, max_length: int = 256) -> Dataset:
+    """Tokenize the text column of a multi-label dataset built by load_multilabel_split."""
+
+    def _tokenize(batch):
+        return tokenizer(
+            batch[TEXT_COLUMN],
+            padding="max_length",
+            truncation=True,
+            max_length=max_length,
+        )
+
+    dataset = dataset.map(_tokenize, batched=True, remove_columns=[TEXT_COLUMN])
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    return dataset

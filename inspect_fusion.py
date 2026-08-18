@@ -8,6 +8,8 @@ Usage:
 """
 
 import argparse
+import json
+import os
 
 import numpy as np
 import torch
@@ -24,12 +26,23 @@ EMOTION_NAME = "emotion"
 HEAD_NAME = "polarization"
 FUSION_SETUP = Fuse(SST2_NAME, EMOTION_NAME)
 FUSION_KEY = ",".join(FUSION_SETUP)
+# Fallback for models trained before adapters.json existed (e.g. the original
+# sst2+emotion model) — such an output-dir has no adapters.json, so we assume
+# the original pair.
+DEFAULT_ADAPTER_SPECS = [(SST2_NAME, SST2_ADAPTER), (EMOTION_NAME, EMOTION_ADAPTER)]
 
 
 def load_trained_model(output_dir):
+    adapters_meta_path = f"{output_dir}/adapters.json"
+    if os.path.exists(adapters_meta_path):
+        with open(adapters_meta_path) as f:
+            adapter_specs = [(a["name"], a["source"]) for a in json.load(f)]
+    else:
+        adapter_specs = DEFAULT_ADAPTER_SPECS
+
     model = AutoAdapterModel.from_pretrained(MODEL_NAME)
-    model.load_adapter(SST2_ADAPTER, load_as=SST2_NAME, with_head=False)
-    model.load_adapter(EMOTION_ADAPTER, load_as=EMOTION_NAME, with_head=False)
+    for name, source in adapter_specs:
+        model.load_adapter(source, load_as=name, with_head=False)
     model.load_adapter_fusion(f"{output_dir}/fusion", set_active=True)
     model.load_head(f"{output_dir}/head")
     model.active_head = HEAD_NAME

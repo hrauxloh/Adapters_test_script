@@ -46,6 +46,16 @@ sooner), `--patience`, `--batch-size`, `--lr`, `--max-length`,
 Note: this requires downloading `bert-base-uncased` and the two adapters
 from the Hugging Face Hub on first run.
 
+By default it fuses `sst2`+`emotion` from AdapterHub, but `--adapters` can
+point it at any set of adapters, local or remote — see
+[Custom adapters: valence + emotion (E-c)](#custom-adapters-valence--emotion-e-c)
+below for a worked example that fuses two adapters trained from scratch in
+this repo instead. Whichever adapters are used get recorded in
+`<output-dir>/adapters.json`, so `calibrate.py`/`evaluate_test.py` know how
+to reload the right ones later — models trained before this existed (i.e.
+the original `sst2`+`emotion` output) have no such file and fall back to
+that original pair automatically.
+
 ## Tuning pipeline
 
 Four scripts (`sweep.py`, `train_fusion.py`, `calibrate.py`,
@@ -212,6 +222,75 @@ rather than something being iteratively tuned). If the fusion run scores
 meaningfully higher, the sst2/emotion adapters are adding real value; if
 the two are close, the adapters aren't contributing much beyond what
 frozen BERT's own representation already captures.
+
+## Custom adapters: valence + emotion (E-c)
+
+This branch trains two adapters from scratch on SemEval-2018 Task 1 data —
+`voc_{train,val,test}.csv` (V-oc: `text`, `Valence_Code` from -3 to +3) and
+`Ec_{train,val,test}.csv` (E-c: `text` plus 11 binary emotion columns) — and
+fuses them into a **separate** polarization model, entirely parallel to the
+original `sst2`+`emotion` one (different output directory, nothing about
+the original model's saved files is touched), so the two can be compared
+later.
+
+**Valence, as regression, not classification.** `Valence_Code` is ordinal
+(-3 up to +3), and plain multi-class classification would treat a
+prediction of `-3` for a true `+3` as no worse than a prediction of `+2` —
+it throws away the ordering. `train_valence_adapter.py` instead trains a
+single continuous output with MSE loss, which naturally penalizes
+predictions in proportion to how far off they are:
+
+```bash
+python train_valence_adapter.py
+```
+
+Reports MAE (mean absolute error, the primary metric — lower is better) and
+"within-one" accuracy (predicted class within 1 of the true class) instead
+of precision/recall/F1, which don't fit a regression target. Also prints a
+naive baseline (always predicting the training-set mean) to compare
+against. Saves only the adapter to `output_valence/valence`.
+
+**Emotion, as multi-label, not 6-way single-label.** Unlike the pretrained
+`emotion` adapter (single-label), `Ec_*.csv` allows any number of the 11
+emotions to be present in the same text — `train_emotion_adapter.py` uses a
+genuine multi-label head (`multilabel=True`: independent sigmoid output per
+emotion, binary cross-entropy loss) rather than training 11 separate
+adapters, so it can learn correlations between emotions rather than
+treating them as unrelated:
+
+```bash
+python train_emotion_adapter.py
+```
+
+Reports micro/macro F1 across all 11 labels. Saves only the adapter to
+`output_emotion_ec/emotion_ec`.
+
+**Fusing them.** `train_fusion.py` now accepts `--adapters` as a list of
+`name=source` pairs (source can be a local path or a Hub id), so the same
+script builds this new model instead of a separate one:
+
+```bash
+python train_fusion.py --train-file eng_train.csv \
+  --adapters valence=output_valence/valence emotion_ec=output_emotion_ec/emotion_ec \
+  --output-dir output_custom
+```
+
+From here, `calibrate.py` and `evaluate_test.py` work exactly as before,
+just pointed at `output_custom` — they read `output_custom/adapters.json`
+to know to reload `valence`+`emotion_ec` rather than `sst2`+`emotion`:
+
+```bash
+python calibrate.py --output-dir output_custom --train-file eng_train.csv
+python evaluate_test.py --output-dir output_custom --test-file eng_test.csv
+```
+
+Comparing `output_custom`'s final test metrics against `output`'s (the
+original model) tells you whether your own trained valence/emotion
+adapters do better, worse, or about the same as the pretrained AdapterHub
+ones — same comparison logic as the baseline check above, just between two
+fusion models instead of fusion-vs-none. Hyperparameters here are all
+defaults (standard learning rate, batch size, etc.) — tuning this model the
+way `sweep.py` tunes the original is future work, not done yet.
 
 ## Training a new adapter from scratch: group identity
 
