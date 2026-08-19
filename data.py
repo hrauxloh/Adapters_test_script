@@ -7,19 +7,19 @@ from sklearn.model_selection import train_test_split
 TEXT_COLUMN = "text"
 LABEL_COLUMN = "polarization"  # default label column, for the polarization CSVs
 
-
+# Function for reading in the POLAR SevEval Task 2026 codes, for polarization binary 
 def _read_csv(csv_path: str, label_column: str = LABEL_COLUMN) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df = df[[TEXT_COLUMN, label_column]].dropna()
     df[label_column] = df[label_column].astype(int)
     return df.reset_index(drop=True)
 
-
+# Loading the data
 def load_split(csv_path: str, label_column: str = LABEL_COLUMN) -> Dataset:
     """Read a CSV and keep only the text/label columns."""
     return Dataset.from_pandas(_read_csv(csv_path, label_column))
 
-
+# Constructing the test/validation split as the POLAR data comes only in test and train splits
 def load_train_val_split(
     csv_path: str, val_fraction: float = 0.2, seed: int = 42, label_column: str = LABEL_COLUMN
 ) -> tuple[Dataset, Dataset]:
