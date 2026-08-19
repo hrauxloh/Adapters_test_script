@@ -7,7 +7,7 @@ from sklearn.model_selection import train_test_split
 TEXT_COLUMN = "text"
 LABEL_COLUMN = "polarization"  # default label column, for the polarization CSVs
 
-
+# for reading in the csv from POLAR SemEval 2029 task
 def _read_csv(csv_path: str, label_column: str = LABEL_COLUMN) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df = df[[TEXT_COLUMN, label_column]].dropna()
@@ -19,7 +19,7 @@ def load_split(csv_path: str, label_column: str = LABEL_COLUMN) -> Dataset:
     """Read a CSV and keep only the text/label columns."""
     return Dataset.from_pandas(_read_csv(csv_path, label_column))
 
-
+# Setting the test/val split from eng_test.csv as the POLAR data only comes in test/train split
 def load_train_val_split(
     csv_path: str, val_fraction: float = 0.2, seed: int = 42, label_column: str = LABEL_COLUMN
 ) -> tuple[Dataset, Dataset]:
@@ -57,22 +57,21 @@ def tokenize_dataset(
     dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     return dataset
 
-
+# Doing another test train val split where list = different emotions in the semebal 18 data, 
 def load_multilabel_split(csv_path: str, label_columns: list) -> Dataset:
     """Read a CSV with several binary label columns (e.g. multiple emotions)
     and combine them into a single multi-hot "labels" column.
     """
     df = pd.read_csv(csv_path)
-    df = df[[TEXT_COLUMN] + label_columns].dropna()
-    df[label_columns] = df[label_columns].astype("float32")
-    df["labels"] = df[label_columns].values.tolist()
-    df = df[[TEXT_COLUMN, "labels"]].reset_index(drop=True)
+    df = df[[TEXT_COLUMN] + label_columns].dropna() # keeps only the columns I want
+    df[label_columns] = df[label_columns].astype("float32") # changing content data type too number
+    df["labels"] = df[label_columns].values.tolist() # Combines the column values into one list and saves this [0, 1, 0, 1, ...]
+    df = df[[TEXT_COLUMN, "labels"]].reset_index(drop=True) # reset index
     return Dataset.from_pandas(df)
 
 
 def tokenize_multilabel_dataset(dataset: Dataset, tokenizer, max_length: int = 256) -> Dataset:
     """Tokenize the text column of a multi-label dataset built by load_multilabel_split."""
-
     def _tokenize(batch):
         return tokenizer(
             batch[TEXT_COLUMN],
