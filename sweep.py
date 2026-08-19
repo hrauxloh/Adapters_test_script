@@ -45,13 +45,13 @@ def main():
         help="Use a subset of the training portion to keep the sweep cheap; "
         "the winning config gets retrained on full data separately.",
     )
-    parser.add_argument("--lr-candidates", default="1e-5,5e-5,1e-4,5e-4")
-    parser.add_argument("--label-smoothing-candidates", default="0.0,0.1")
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--patience", type=int, default=2)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--max-length", type=int, default=96)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--lr-candidates", default="1e-5,5e-5,1e-4,5e-4") #different learning rates
+    parser.add_argument("--label-smoothing-candidates", default="0.0,0.1") #testing no smoothing vs smoothing 
+    parser.add_argument("--epochs", type=int, default=10) # not tested
+    parser.add_argument("--patience", type=int, default=2) # not tested
+    parser.add_argument("--batch-size", type=int, default=32) # not tested
+    parser.add_argument("--max-length", type=int, default=96) # not tested
+    parser.add_argument("--seed", type=int, default=42) # not tested
     parser.add_argument("--config-out", default="best_config.json")
     args = parser.parse_args()
 
