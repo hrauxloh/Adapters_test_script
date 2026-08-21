@@ -14,7 +14,7 @@ import argparse
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from transformers import AutoTokenizer, Trainer, TrainingArguments
+from transformers import AutoTokenizer, EarlyStoppingCallback, Trainer, TrainingArguments
 from adapters import AutoAdapterModel
 
 from data import load_split, tokenize_dataset
@@ -56,7 +56,8 @@ def main():
     parser.add_argument("--train-file", default="eng_train.csv")
     parser.add_argument("--test-file", default="eng_test.csv")
     parser.add_argument("--output-dir", default="output_baseline")
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=10, help="Upper bound on epochs; early stopping usually stops sooner.")
+    parser.add_argument("--patience", type=int, default=2, help="Early stopping patience, in evals (epochs) without improvement.")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--max-length", type=int, default=96)
@@ -110,6 +111,7 @@ def main():
         eval_dataset=test_dataset,
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
     )
 
     trainer.train()
