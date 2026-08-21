@@ -23,12 +23,12 @@ from adapters import AutoAdapterModel, AdapterTrainer, Fuse
 
 from data import load_train_val_split, tokenize_dataset
 
-MODEL_NAME = "bert-base-uncased"
+MODEL_NAME = "bert-base-uncased" # selecting the model 
 HEAD_NAME = "polarization"
 DEFAULT_ADAPTERS = [
     "sst2=AdapterHub/bert-base-uncased-pf-sst2",
     "emotion=AdapterHub/bert-base-uncased-pf-emotion",
-]
+] # selecting the pre-trained adapters 
 
 
 def parse_adapter_specs(specs):
@@ -40,37 +40,40 @@ def parse_adapter_specs(specs):
     """
     parsed = []
     for spec in specs:
-        name, sep, source = spec.partition("=")
+        name, sep, source = spec.partition("=") # This split the names at the first "=" given into the name of the adapter and the source, which come as a string
         if not sep or not name or not source:
             raise ValueError(f"Invalid --adapters entry {spec!r}, expected name=source")
         parsed.append((name, source))
-    return parsed
+    return parsed # returns a list of the name and the source, or list of lists
 
 
-class ConfigurableLossTrainer(AdapterTrainer):
+class ConfigurableLossTrainer(AdapterTrainer): # This is building on AdapterTrainer to add a different loss calculation step
     """AdapterTrainer with optional class-weighted / label-smoothed cross-entropy."""
 
-    def __init__(self, *args, class_weights=None, label_smoothing=0.0, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, class_weights=None, label_smoothing=0.0, **kwargs): # this is the start of setting up the trainer, which is called when you apply it
+        super().__init__(*args, **kwargs) # args and kwargs means accept all other arguments that the NORMAL AdapterTrainer expects, menaing the trainer is instructed to do a normal AdapterTrainer initialization
         self.class_weights = class_weights
         self.label_smoothing = label_smoothing
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs.pop("labels")
-        outputs = model(**inputs)
-        logits = outputs.get("logits")
-        weight = self.class_weights.to(logits.device) if self.class_weights is not None else None
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs): # Function to calculate how wrong the model predictions are. 
+        labels = inputs.pop("labels") # takes the labels out of the general input for the function
+        outputs = model(**inputs) # asks the model for prediction
+        logits = outputs.get("logits") # put the predictions (the logits are the raw score for each class, not yet probabilities) into an object,
+        # logits.devices makes sure the logits are on the save device as the model (i.e. the same GPU)
+        weight = self.class_weights.to(logits.device) if self.class_weights is not None else None # this reiterates to use the weights given (which come from the dist of classes/emotions in the data, which are needed for the loss calculation)
+        #This is making the loss function, with the data driven class weights and some label smoothing (making the targets less absolute, i.e. [0,0,1] -> [0.05, 0.05, 0.9] to not force
+        #the model to always be 100% certain, which is good for generalization over time), but as it was set at 0.0 earlier, its currently off
         loss_fct = torch.nn.CrossEntropyLoss(weight=weight, label_smoothing=self.label_smoothing)
-        loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+        loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1)) # this gets the tensors (list (1D tensor), list of list (2D tensor)) in the shape the CrossEntropyLoss expects
         return (loss, outputs) if return_outputs else loss
 
 
 def build_model(adapter_specs):
-    model = AutoAdapterModel.from_pretrained(MODEL_NAME)
+    model = AutoAdapterModel.from_pretrained(MODEL_NAME) # loads the bert model defined earlier
 
     # Load each adapter, frozen, without its original head (if it has one).
     for name, source in adapter_specs:
-        model.load_adapter(source, load_as=name, with_head=False)
+        model.load_adapter(source, load_as=name, with_head=False) # loads the pre-trained adapters defined earlier
 
     fusion_setup = Fuse(*[name for name, _ in adapter_specs])
 
@@ -86,7 +89,7 @@ def build_model(adapter_specs):
 
     return model, fusion_setup
 
-
+# Just setting up the evaliation metrics
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
@@ -100,34 +103,34 @@ def compute_metrics(eval_pred):
         "f1": f1,
     }
 
-
+#This sets up all the options that I want for when the model training process is running
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--train-file", default="eng_train.csv")
-    parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of --train-file held out for validation/early stopping.")
-    parser.add_argument("--train-fraction", type=float, default=1.0, help="Subsample the remaining training portion (after the val split) to this fraction, for cheap sweep runs.")
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--save-artifacts", action=argparse.BooleanOptionalAction, default=True, help="Save the trained fusion+head to --output-dir. Turn off for throwaway sweep trials.")
-    parser.add_argument("--epochs", type=int, default=10, help="Upper bound on epochs; early stopping usually stops sooner.")
-    parser.add_argument("--patience", type=int, default=2, help="Early stopping patience, in evals (epochs) without improvement.")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--max-length", type=int, default=96)
+    parser = argparse.ArgumentParser(description=__doc__) # This starts the setting menu and then all other options are added in
+    parser.add_argument("--train-file", default="eng_train.csv") #adds the training file
+    parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of --train-file held out for validation/early stopping.") # Setting up how much to use for validation (20%)
+    parser.add_argument("--train-fraction", type=float, default=1.0, help="Subsample the remaining training portion (after the val split) to this fraction, for cheap sweep runs.") # setting only 10% for  cheap training
+    parser.add_argument("--output-dir", default="output") # set the output directory
+    parser.add_argument("--save-artifacts", action=argparse.BooleanOptionalAction, default=True, help="Save the trained fusion+head to --output-dir. Turn off for throwaway sweep trials.") # settings for saving
+    parser.add_argument("--epochs", type=int, default=10, help="Upper bound on epochs; early stopping usually stops sooner.") #Sets the upper bound for number of epochs
+    parser.add_argument("--patience", type=int, default=2, help="Early stopping patience, in evals (epochs) without improvement.") # Sets how many times the epoch is run without improving (early stopping)
+    parser.add_argument("--batch-size", type=int, default=32) # batch size of 32
+    parser.add_argument("--lr", type=float, default=5e-5) # Sets the learning rate, this is a typical rate for transformer fine tuning
+    parser.add_argument("--max-length", type=int, default=96) # Sets the max length of the texts 
     parser.add_argument("--label-smoothing", type=float, default=0.0)
-    parser.add_argument("--class-weighted", action=argparse.BooleanOptionalAction, default=False, help="Weight the loss inversely to class frequency, to help the minority (polarized) class.")
+    parser.add_argument("--class-weighted", action=argparse.BooleanOptionalAction, default=False, help="Weight the loss inversely to class frequency, to help the minority (polarized) class.") # Turns of class weighting (pol/non-pol)
     parser.add_argument(
         "--adapters",
         nargs="+",
-        default=DEFAULT_ADAPTERS,
+        default=DEFAULT_ADAPTERS, # specifying which adapters to use
         help="Adapters to fuse, as name=source pairs (space-separated). Source can be an "
         "AdapterHub/HF Hub id or a local path to a saved adapter, e.g. "
         "valence=output_valence/valence emotion_ec=output_emotion_ec/emotion_ec",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--fp16",
+        "--fp16", # sets the floating-point numbers, defaul is 32 bit, but 16 bit is cheaper 
         action=argparse.BooleanOptionalAction,
-        default=None,
+        default=None, # this means the the programe will decide what is faster
         help="Use fp16 mixed precision training. Defaults to on when a GPU is available.",
     )
     return parser
@@ -139,9 +142,9 @@ def train_and_evaluate(args):
         print("Warning: --fp16 requested but no GPU is available; running in full precision.")
         use_fp16 = False
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME) # tokenizer
 
-    train_split, val_split = load_train_val_split(args.train_file, args.val_fraction, seed=args.seed)
+    train_split, val_split = load_train_val_split(args.train_file, args.val_fraction, seed=args.seed) # loading and splitting the data
     if args.train_fraction < 1.0:
         keep = int(len(train_split) * args.train_fraction)
         train_split = train_split.shuffle(seed=args.seed).select(range(keep))
@@ -152,11 +155,11 @@ def train_and_evaluate(args):
         weights = compute_class_weight("balanced", classes=np.array([0, 1]), y=labels_np)
         class_weights = torch.tensor(weights, dtype=torch.float)
 
-    train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length)
-    val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length)
+    train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length) # tokenizing
+    val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length) # tokenizing
 
-    adapter_specs = parse_adapter_specs(args.adapters)
-    model, fusion_setup = build_model(adapter_specs)
+    adapter_specs = parse_adapter_specs(args.adapters) # implementing the function
+    model, fusion_setup = build_model(adapter_specs)# implementing the build model script
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
