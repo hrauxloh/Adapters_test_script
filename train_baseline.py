@@ -1,9 +1,20 @@
-"""Baseline for comparison against train_fusion.py: trains a fresh binary
-classification head directly on frozen bert-base-uncased, with NO adapters
-and NO fusion layer. Everything else (data, frozen base, hyperparameters,
-metrics) is kept identical to train_fusion.py, so the difference in test-set
-metrics between the two scripts isolates the value the sst2/emotion adapter
-fusion actually adds over a plain frozen-BERT baseline.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+This is the "control group" for train_fusion.py. It trains a fresh
+classification head directly on frozen bert-base-uncased — no adapters, no
+fusion layer at all — with everything else (data, hyperparameters, metrics)
+kept the same. Comparing this script's final score against a fusion
+model's tells you whether the adapters are actually adding anything, or
+whether frozen BERT alone would have done just as well.
+
+Menu of what happens when you run this file, in order:
+  1. Load bert-base-uncased and freeze it completely.
+  2. Attach one brand-new, untrained classification head on top — this is
+     the only part that will actually learn.
+  3. Train that head on the training data, checking progress against the
+     test data each epoch, until it stops improving.
+  4. Print the final accuracy/precision/recall/F1 and save the head.
 
 Usage:
     python train_baseline.py --train-file eng_train.csv --test-file eng_test.csv
@@ -30,7 +41,7 @@ def build_model():
 
     # Freeze the base model so only the new head is trained — the same
     # amount of "new" capacity as train_fusion.py's fusion+head, minus the
-    # two adapters and the fusion layer itself.
+    # adapters and the fusion layer itself.
     for param in model.bert.parameters():
         param.requires_grad = False
 
@@ -38,6 +49,7 @@ def build_model():
 
 
 def compute_metrics(eval_pred):
+    # Turns raw predictions + correct answers into accuracy/precision/recall/F1.
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
     precision, recall, f1, _ = precision_recall_fscore_support(

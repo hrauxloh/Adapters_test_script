@@ -1,19 +1,34 @@
-"""Train a standalone adapter on the group-reference-detection task
-(Group_bool: does this text reference a social/political group), completely
-independent of the polarization task.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Trains a brand-new adapter — from nothing, no pretrained head start — to
+detect whether a piece of text references a social/political group at all
+(the Group_bool column: yes/no). This is completely separate from the
+polarization task; it only ever touches group_reference_data.csv.
 
-This is Step 1 of the group-identity ablation plan: the adapter trained here
-gets saved (its temporary classification head is discarded) and later reused
-frozen, alongside sst2/emotion, in fusion models that predict `polarization`
-— exactly like sst2/emotion themselves are used, except this one has no
-pretrained starting point, so it's trained from scratch on
-group_reference_data.csv here first.
+This is one of three "build an adapter from scratch" scripts in this
+project (the others are train_valence_adapter.py and
+train_emotion_adapter.py) — all three follow the same shape: attach a
+fresh adapter, add a temporary head just to train it, then keep only the
+adapter once it's done. This one is the simplest of the three (plain
+yes/no classification), since valence needs a regression head and emotion
+needs a multi-label head instead.
 
-Uses the same architecture (Pfeiffer/SeqBn bottleneck) as sst2/emotion, so
-it's dimensionally compatible for fusion, and the same
-validation-split/early-stopping discipline as the rest of the pipeline —
-this script never needs eng_train.csv/eng_test.csv, it only touches its own
-group-reference data.
+group_reference_data.csv is a single file, not already split into
+train/validation — so unlike the valence/emotion scripts, this one carves
+its own validation slice out of --train-file using the same
+load_train_val_split() helper the polarization model uses.
+
+Menu of what happens when you run this file, in order:
+  1. Load group_reference_data.csv and split off a validation slice.
+  2. Build the model: attach one fresh, empty adapter to frozen BERT, plus
+     a temporary yes/no classification head on top.
+  3. Train ONLY the adapter + temporary head, checking against the
+     validation slice, until it stops improving.
+  4. Compare the result to a "just guess the most common answer" baseline,
+     and warn if the adapter didn't beat it.
+  5. Save the adapter alone — the temporary head is thrown away, the same
+     way sst2/emotion's original heads were thrown away when we loaded them.
 
 Usage:
     python train_group_adapter.py --train-file group_reference_data.csv
@@ -29,9 +44,9 @@ from adapters import AutoAdapterModel, AdapterTrainer, SeqBnConfig
 
 from data import load_train_val_split, tokenize_dataset
 
-MODEL_NAME = "bert-base-uncased"
-ADAPTER_NAME = "group"
-LABEL_COLUMN = "Group_bool"
+MODEL_NAME = "bert-base-uncased"  # the frozen base model the adapter attaches to
+ADAPTER_NAME = "group"  # what this adapter will be called when saved/reloaded
+LABEL_COLUMN = "Group_bool"  # the column in group_reference_data.csv we're predicting
 
 
 def build_model():
@@ -42,6 +57,10 @@ def build_model():
     # sst2/emotion, there's no pretrained starting point: it has to learn the
     # task from this dataset alone.
     model.add_adapter(ADAPTER_NAME, config=SeqBnConfig())
+    # A plain 2-class head (yes/no) — this is the "standard" version of the
+    # three adapter scripts; compare against train_valence_adapter.py
+    # (1 continuous output) and train_emotion_adapter.py (11 independent
+    # yes/no outputs) to see what changes for a different kind of label.
     model.add_classification_head(ADAPTER_NAME, num_labels=2)
 
     # Freeze the base model; only this adapter + its (temporary) head train.
@@ -53,6 +72,7 @@ def build_model():
 
 
 def compute_metrics(eval_pred):
+    # Turns raw predictions + correct answers into accuracy/precision/recall/F1.
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
     precision, recall, f1, _ = precision_recall_fscore_support(
@@ -92,6 +112,8 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
+    # group_reference_data.csv is one file — split off a validation slice
+    # ourselves (stratified, so the yes/no balance matches in both halves).
     train_split, val_split = load_train_val_split(
         args.train_file, args.val_fraction, seed=args.seed, label_column=LABEL_COLUMN
     )

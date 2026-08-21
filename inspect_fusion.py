@@ -1,7 +1,28 @@
-"""Inspect a trained AdapterFusion model: for each transformer layer, how much
-weight the fusion layer assigned to the sst2 adapter vs. the emotion adapter
-when making its polarization predictions, and how confident the model was on
-correct vs. incorrect predictions.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Looks inside an already-trained fusion model to answer two questions it
+doesn't normally show you: (1) how much did it lean on the sst2 adapter vs.
+the emotion adapter, at each layer and for each example, and (2) is its
+confidence trustworthy — is it more sure when it's right than when it's
+wrong, or does it get things "confidently wrong"? This doesn't train or
+change anything, it's read-only analysis of a model you already have.
+
+NOTE: this file currently only knows how to display exactly two adapters
+(sst2/emotion). If you point it at a model fused from a different number
+of adapters, the per-adapter columns below won't be accurate.
+
+Menu of what happens when you run this file, in order:
+  1. Reload the trained model (load_trained_model — also reused by
+     calibrate.py and evaluate_test.py).
+  2. Run it over some test examples with a special setting that reveals
+     the fusion layer's internal adapter-weighting.
+  3. Print that weighting two ways: averaged per transformer layer, and
+     per individual example.
+  4. Report how the model's confidence compares between its correct and
+     incorrect answers.
+  5. List the wrong answers it was most confident about — usually the
+     most informative mistakes to actually go read.
 
 Usage:
     python inspect_fusion.py --output-dir output --data-file eng_test.csv
@@ -86,6 +107,9 @@ def main():
             return_tensors="pt",
         )
         with torch.no_grad():
+            # output_adapter_fusion_attentions=True is the special setting
+            # that makes the model also hand back its internal per-layer,
+            # per-token adapter weighting — normally hidden.
             outputs = model(**encodings, output_adapter_fusion_attentions=True)
 
         batch_probs = torch.softmax(outputs.logits, dim=-1).numpy()  # [batch, num_labels]
@@ -93,7 +117,7 @@ def main():
         preds.extend(batch_preds.tolist())
         confidences.extend(batch_probs[np.arange(len(batch_preds)), batch_preds].tolist())
 
-        mask = encodings["attention_mask"].numpy().astype(bool)  # [batch, seq]
+        mask = encodings["attention_mask"].numpy().astype(bool)  # [batch, seq] — True where there's real text, False on padding
         fusion_attn = outputs.adapter_fusion_attentions[FUSION_KEY]
 
         layer_ids = sorted(fusion_attn.keys())

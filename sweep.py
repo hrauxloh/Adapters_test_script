@@ -1,15 +1,28 @@
-"""Greedy hyperparameter search for train_fusion.py: tunes learning rate,
-then class-weighted loss, then label smoothing, one axis at a time (each
-stage keeps the previous stage's winner fixed) — far cheaper than a full
-grid search. Runs on a subsample of the training data with early stopping,
-evaluated against a validation split (never eng_test.csv), so it's fast and
-doesn't tune to the test set.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Tries out a handful of settings for train_fusion.py to see which work best,
+instead of you having to guess. It tunes one setting at a time — learning
+rate, then whether to weight rare-class errors more, then label smoothing —
+keeping each stage's winner fixed before moving to the next. That's cheaper
+than trying every possible combination of all three at once, at the cost of
+maybe missing a combination that only works well together.
+
+It runs on a smaller slice of the training data (see --train-fraction) and
+always checks the validation split — never eng_test.csv — so this search
+never "peeks" at the data the final model gets judged on.
+
+Menu of what happens when you run this file, in order:
+  1. Stage 1 — try each learning rate candidate, keep the best.
+  2. Stage 2 — with that learning rate fixed, try with/without
+     class-weighting, keep the best.
+  3. Stage 3 — with both fixed, try each label-smoothing candidate,
+     keep the best.
+  4. Save the winning combination to best_config.json, and print the
+     exact command to retrain on the FULL dataset with those settings.
 
 Usage:
     python sweep.py --train-file eng_train.csv
-
-Writes the winning settings to --config-out (default best_config.json),
-which train_fusion.py's final full run should then be pointed at.
 """
 
 import argparse
@@ -19,6 +32,9 @@ from train_fusion import build_arg_parser, train_and_evaluate
 
 
 def run_trial(overrides):
+    # Starts from train_fusion.py's normal defaults, turns off saving (these
+    # are throwaway test runs), then applies whichever settings this
+    # particular trial is testing (e.g. a specific learning rate).
     args = build_arg_parser().parse_args([])
     args.save_artifacts = False
     args.output_dir = "sweep_tmp"
@@ -45,14 +61,14 @@ def main():
         help="Use a subset of the training portion to keep the sweep cheap; "
         "the winning config gets retrained on full data separately.",
     )
-    parser.add_argument("--lr-candidates", default="1e-5,5e-5,1e-4,5e-4") #different learning rates
-    parser.add_argument("--label-smoothing-candidates", default="0.0,0.1") #testing no smoothing vs smoothing 
-    parser.add_argument("--epochs", type=int, default=10) # not tested
-    parser.add_argument("--patience", type=int, default=2) # not tested
-    parser.add_argument("--batch-size", type=int, default=32) # not tested
-    parser.add_argument("--max-length", type=int, default=96) # not tested
-    parser.add_argument("--seed", type=int, default=42) # not tested
-    parser.add_argument("--config-out", default="best_config.json")
+    parser.add_argument("--lr-candidates", default="1e-5,5e-5,1e-4,5e-4")  # learning rates to try in stage 1
+    parser.add_argument("--label-smoothing-candidates", default="0.0,0.1")  # values to try in stage 3 (0.0 = off)
+    parser.add_argument("--epochs", type=int, default=10)  # kept fixed across every trial, not searched over
+    parser.add_argument("--patience", type=int, default=2)  # kept fixed across every trial, not searched over
+    parser.add_argument("--batch-size", type=int, default=32)  # kept fixed across every trial, not searched over
+    parser.add_argument("--max-length", type=int, default=96)  # kept fixed across every trial, not searched over
+    parser.add_argument("--seed", type=int, default=42)  # kept fixed across every trial, not searched over
+    parser.add_argument("--config-out", default="best_config.json")  # where the winning settings get saved
     args = parser.parse_args()
 
     common = dict(

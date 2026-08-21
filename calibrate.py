@@ -1,12 +1,25 @@
-"""Post-hoc calibration for a trained fusion model: fits a temperature
-scaling factor and a decision threshold on the validation split (the same
-one held out by train_fusion.py), then saves both to
-<output-dir>/calibration.json for evaluate_test.py to use.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Fixes overconfidence in an already-trained model, without retraining
+anything. Models often say "I'm 95% sure" when they're really only right
+80% of the time — this script rescales the model's confidence so it's more
+honest, and separately checks whether 0.5 is really the best cutoff for
+deciding "polarized" vs "not," instead of just assuming it.
 
-This doesn't retrain anything — it only rescales the model's existing output
-probabilities so its confidence better reflects how often it's actually
-right, and picks the probability cutoff that maximizes F1 instead of
-assuming 0.5.
+Only ever looks at the validation split (the same one held out by
+train_fusion.py) — never the test set — same reasoning as everywhere else
+in this project: don't let any decision get made by peeking at the data
+used for the final report.
+
+Menu of what happens when you run this file, in order:
+  1. Reload the already-trained model.
+  2. Run it over the validation data and collect its raw predictions.
+  3. Find one number ("temperature") that rescales those predictions so
+     the model's confidence better matches how often it's actually right.
+  4. Try every possible decision cutoff (0.01 to 0.99) to find which one
+     gives the best F1, instead of assuming 0.5.
+  5. Save both numbers to calibration.json for evaluate_test.py to use.
 
 Usage:
     python calibrate.py --output-dir output --train-file eng_train.csv
@@ -25,6 +38,8 @@ from inspect_fusion import MODEL_NAME, load_trained_model
 
 
 def get_logits(model, tokenizer, texts, batch_size, max_length):
+    # Runs the model over the texts in small batches (so we don't run out of
+    # memory) and collects its raw, un-normalized output scores ("logits").
     all_logits = []
     for start in range(0, len(texts), batch_size):
         batch_texts = texts[start : start + batch_size]
@@ -39,6 +54,11 @@ def get_logits(model, tokenizer, texts, batch_size, max_length):
 
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     """Find the scalar T that minimizes NLL of softmax(logits / T) against labels."""
+    # Dividing the raw scores by a number above 1 before turning them into
+    # probabilities pulls extreme (over-)confident predictions back toward
+    # 50/50, without changing which class ends up predicted. This searches
+    # for the single number that makes the model's stated confidence best
+    # match how often it's actually correct.
     temperature = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.LBFGS([temperature], lr=0.05, max_iter=100)
     nll = torch.nn.CrossEntropyLoss()
@@ -54,6 +74,9 @@ def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
 
 
 def find_best_threshold(probs_class1: np.ndarray, labels: np.ndarray):
+    # Brute-force search: try every cutoff from 0.01 to 0.99 and see which
+    # one gives the best F1 score, rather than assuming the default 0.5 is
+    # actually the best place to draw the line.
     best_threshold, best_f1 = 0.5, -1.0
     for threshold in np.linspace(0.01, 0.99, 99):
         preds = (probs_class1 >= threshold).astype(int)

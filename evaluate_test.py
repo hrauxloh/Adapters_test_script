@@ -1,9 +1,26 @@
-"""Final, one-time evaluation on eng_test.csv, using the temperature scaling
-and decision threshold fit by calibrate.py on the validation set.
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Produces the one number that actually counts: how well the trained,
+calibrated model does on data it has never been checked against before
+(eng_test.csv). Every other script in this project deliberately avoids
+this file so nothing gets tuned to it — this is the only place it gets used.
 
 Run this once, after every tuning decision (sweep.py, calibrate.py) has
 already been made. Re-running it and then going back to change settings
-based on what it shows defeats the point of keeping the test set held out.
+based on what it shows defeats the entire point of keeping the test set
+held out — if changes are needed, make them before this step, using the
+validation split, not after seeing this file's output.
+
+Menu of what happens when you run this file, in order:
+  1. Load the calibration numbers (temperature, decision threshold) that
+     calibrate.py already worked out.
+  2. Reload the trained model and run it over every row of the test set.
+  3. Apply the calibration and turn its output into final yes/no predictions.
+  4. Print accuracy / precision / recall / F1, and how trustworthy its
+     confidence actually was.
+  5. Write everything to a single summary.md file — a permanent record
+     of this run's settings and result.
 
 Usage:
     python evaluate_test.py --output-dir output --test-file eng_test.csv

@@ -1,19 +1,40 @@
-"""Train a standalone adapter on multi-label emotion detection, using
-Ec_train.csv / Ec_val.csv / Ec_test.csv (SemEval-2018 Task 1, E-c: text plus
-11 binary emotion columns — anger, anticipation, disgust, fear, joy, love,
-optimism, pessimism, sadness, surprise, trust — where any number of them,
-including zero, can be present at once).
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Trains a brand-new adapter — from nothing, no pretrained head start — to
+detect 11 different emotions in text at once (SemEval-2018 Task 1, E-c:
+anger, anticipation, disgust, fear, joy, love, optimism, pessimism,
+sadness, surprise, trust). Uses Ec_train.csv / Ec_val.csv / Ec_test.csv,
+and never touches the polarization data at all.
 
-This is a separate, parallel experiment to the original sst2/emotion fusion
-model — it does not touch or overwrite that model's output. The adapter
-trained here is meant to later be fused (alongside a matching
-train_valence_adapter.py adapter) into its own new polarization model, for
-comparison against the AdapterHub-based one.
+This is one of three "build an adapter from scratch" scripts in this
+project (the others are train_group_adapter.py and
+train_valence_adapter.py) — all three follow the same shape: attach a
+fresh adapter, add a temporary head just to train it, then keep only the
+adapter once it's done.
 
-Uses a genuine multi-label head (independent sigmoid output per emotion,
-binary cross-entropy loss) rather than 11 separate adapters — one adapter
-can jointly learn correlations between emotions, and is far cheaper to
-train than 11 standalone ones.
+What's different here: each row of Ec_*.csv can have ANY number of the 11
+emotions present at once (including zero, including several together) —
+it's not "pick the one right answer" the way train_group_adapter.py's
+yes/no task is. So instead of one classification head, this uses a
+multi-label head — effectively 11 independent yes/no decisions made
+together — so the adapter can learn how emotions relate to each other,
+rather than training 11 separate single-emotion adapters.
+
+Ec_train.csv / Ec_val.csv already come as separate files (SemEval provided
+them pre-split) — unlike train_group_adapter.py, this script doesn't need
+to carve its own validation slice out of the training file.
+
+Menu of what happens when you run this file, in order:
+  1. Load Ec_train.csv and Ec_val.csv, combining the 11 emotion columns
+     into one label per row (e.g. [0, 1, 0, 0, 1, ...]).
+  2. Build the model: attach one fresh, empty adapter to frozen BERT, plus
+     a temporary head with 11 independent yes/no outputs.
+  3. Train ONLY the adapter + temporary head, checking against the
+     validation slice, until it stops improving.
+  4. Report how well it's doing across all 11 emotions.
+  5. Save the adapter alone — the temporary head is thrown away, the same
+     way sst2/emotion's original heads were thrown away when we loaded them.
 
 Usage:
     python train_emotion_adapter.py
@@ -29,18 +50,24 @@ from adapters import AutoAdapterModel, AdapterTrainer, SeqBnConfig
 
 from data import load_multilabel_split, tokenize_multilabel_dataset
 
-MODEL_NAME = "bert-base-uncased"
-ADAPTER_NAME = "emotion_ec"
+MODEL_NAME = "bert-base-uncased"  # the frozen base model the adapter attaches to
+ADAPTER_NAME = "emotion_ec"  # what this adapter will be called when saved/reloaded
 EMOTION_COLUMNS = [
     "anger", "anticipation", "disgust", "fear", "joy", "love",
     "optimism", "pessimism", "sadness", "surprise", "trust",
-]
+]  # the 11 columns in Ec_*.csv we're predicting, together
 
 
 def build_model():
     model = AutoAdapterModel.from_pretrained(MODEL_NAME)
 
     model.add_adapter(ADAPTER_NAME, config=SeqBnConfig())
+    # multilabel=True switches the head from "pick one class" (softmax) to
+    # "independently decide yes/no for each of the 11" (sigmoid) — this one
+    # flag is what makes it multi-label instead of a normal classifier.
+    # Compare against train_group_adapter.py (num_labels=2, plain yes/no)
+    # and train_valence_adapter.py (num_labels=1, a single number) to see
+    # what changes for a different kind of label.
     model.add_classification_head(ADAPTER_NAME, num_labels=len(EMOTION_COLUMNS), multilabel=True)
 
     model.train_adapter(ADAPTER_NAME)
@@ -51,8 +78,15 @@ def build_model():
 
 
 def compute_metrics(eval_pred):
+    # Turns each of the 11 raw scores into a yes/no (via sigmoid + a 0.5
+    # cutoff), then reports two versions of F1:
+    #   - f1_micro: treats every individual yes/no decision as equally
+    #     important, across all examples and all 11 emotions together.
+    #   - f1_macro: treats every EMOTION as equally important, so a rare
+    #     emotion like "trust" counts as much as a common one like "joy",
+    #     instead of being drowned out by it.
     logits, labels = eval_pred
-    probs = 1 / (1 + np.exp(-logits))  # sigmoid
+    probs = 1 / (1 + np.exp(-logits))  # sigmoid: turns raw scores into 0-1 probabilities
     preds = (probs >= 0.5).astype(int)
     return {
         "f1_micro": f1_score(labels, preds, average="micro", zero_division=0),
