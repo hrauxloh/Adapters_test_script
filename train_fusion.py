@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import json
+import os
 
 import numpy as np
 import torch
@@ -68,6 +69,15 @@ def parse_adapter_specs(specs):
         name, sep, source = spec.partition("=")
         if not sep or not name or not source:
             raise ValueError(f"Invalid --adapters entry {spec!r}, expected name=source")
+        if os.path.isdir(source):
+            # A local adapter folder — resolve it to an absolute path now,
+            # before it gets saved into adapters.json. Otherwise a relative
+            # path like "output_valence/valence" only works as long as every
+            # later script (calibrate.py, evaluate_test.py, ...) happens to
+            # be run from this exact same working directory — which breaks
+            # the moment you `cd` somewhere else (e.g. into the cloned repo)
+            # in a later Colab session.
+            source = os.path.abspath(source)
         parsed.append((name, source))
     return parsed  # a list of (name, source) pairs
 
