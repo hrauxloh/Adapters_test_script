@@ -64,7 +64,15 @@ def load_trained_model(output_dir):
     model = AutoAdapterModel.from_pretrained(MODEL_NAME)
     for name, source in adapter_specs:
         model.load_adapter(source, load_as=name, with_head=False)
-    model.load_adapter_fusion(f"{output_dir}/fusion", set_active=True)
+
+    if len(adapter_specs) == 1:
+        # A single-adapter ablation run (see train_fusion.py) never saved a
+        # fusion file — there's nothing to fuse — so just activate that one
+        # adapter directly instead of trying to load a fusion layer.
+        model.set_active_adapters(adapter_specs[0][0])
+    else:
+        model.load_adapter_fusion(f"{output_dir}/fusion", set_active=True)
+
     model.load_head(f"{output_dir}/head")
     model.active_head = HEAD_NAME
     model.eval()

@@ -10,6 +10,11 @@ emotion) — but the --adapters setting can point it at any adapters at all,
 including ones trained from scratch elsewhere in this project (see
 train_group_adapter.py / train_valence_adapter.py / train_emotion_adapter.py).
 
+If --adapters is given only ONE adapter, there's nothing to fuse — this
+script then skips the fusion layer entirely and just trains a fresh head on
+top of that one frozen adapter. This is what makes it usable for ablation
+runs that isolate a single adapter's contribution, not just combinations.
+
 Model selection (early stopping, "best epoch") is done against a validation
 split held out from --train-file — NOT eng_test.csv. This keeps the test
 set untouched for a single final evaluation (see evaluate_test.py), instead
@@ -103,19 +108,31 @@ def build_model(adapter_specs):
     for name, source in adapter_specs:
         model.load_adapter(source, load_as=name, with_head=False)
 
-    fusion_setup = Fuse(*[name for name, _ in adapter_specs])
-
-    # Add an AdapterFusion layer combining all of them, plus a fresh binary head for polarization.
-    model.add_adapter_fusion(fusion_setup)
     model.add_classification_head(HEAD_NAME, num_labels=2)
+    names = [name for name, _ in adapter_specs]
+
+    if len(names) == 1:
+        # Only one adapter: there's nothing to fuse, so skip AdapterFusion
+        # entirely. An AdapterFusion layer has its own extra trainable
+        # weights (not just an attention score) even with a single adapter
+        # inside it, so using one here would give this "one adapter alone"
+        # ablation model more trainable capacity than it's supposed to have
+        # — this only trains that one adapter's classification head, exactly
+        # like train_group_adapter.py etc. train their adapters standalone.
+        active_setup = names[0]
+        model.train_adapter(active_setup)
+    else:
+        active_setup = Fuse(*names)
+        # Add an AdapterFusion layer combining all of them.
+        model.add_adapter_fusion(active_setup)
+        model.train_adapter_fusion(active_setup)
 
     # Freeze the base model and the source adapters; only the fusion layer
-    # and the new head remain trainable.
-    model.train_adapter_fusion(fusion_setup)
-    model.set_active_adapters(fusion_setup)
+    # (if any) and the new head remain trainable.
+    model.set_active_adapters(active_setup)
     model.active_head = HEAD_NAME
 
-    return model, fusion_setup
+    return model, active_setup
 
 
 def compute_metrics(eval_pred):
@@ -192,7 +209,8 @@ def train_and_evaluate(args):
     val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length)
 
     adapter_specs = parse_adapter_specs(args.adapters)
-    model, fusion_setup = build_model(adapter_specs)
+    model, active_setup = build_model(adapter_specs)
+    uses_fusion = len(adapter_specs) > 1  # False for a single-adapter (no-fusion) ablation run
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -228,7 +246,8 @@ def train_and_evaluate(args):
     metrics = trainer.evaluate()
 
     if args.save_artifacts:
-        model.save_adapter_fusion(f"{args.output_dir}/fusion", fusion_setup)
+        if uses_fusion:
+            model.save_adapter_fusion(f"{args.output_dir}/fusion", active_setup)
         model.save_head(f"{args.output_dir}/head", HEAD_NAME)
         # Records exactly which adapters (and where from) were fused, so
         # calibrate.py / evaluate_test.py know how to reload this same model

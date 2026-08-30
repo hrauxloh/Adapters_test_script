@@ -324,28 +324,53 @@ in the next section, not just this one training run.
 
 ## Testing which features actually matter: the ablation plan
 
-The claim "sentiment, emotion, and group identity are important features
-for detecting polarization" is stronger than what fusing all of them
-together and beating a no-adapter baseline can show — that only proves the
-combination helps, not that each one individually does, or that
-affect/identity-specific adapters are what matters rather than any diverse
-set of pretrained adapters. Properly testing the individual claim needs a
-full factorial ablation:
+The claim "valence, emotion, and group identity are important features for
+detecting polarization" is stronger than what fusing all three together
+and beating a no-adapter baseline can show — that only proves the
+combination helps, not that each one individually does, or that these
+specific indicators matter rather than any diverse set of adapters.
+Properly testing the individual claim needs a full factorial ablation:
 
-| Adapters included | What it isolates |
-|---|---|
-| none (baseline) | Reference point — `train_baseline.py` |
-| sst2 only | Sentiment's individual contribution |
-| emotion only | Emotion's individual contribution |
-| group only | Group identity's individual contribution |
-| sst2 + emotion | Combined (the current `train_fusion.py` result) |
-| sst2 + group | Pairwise interaction |
-| emotion + group | Pairwise interaction |
-| sst2 + emotion + group | All three combined |
-| 3 unrelated-task adapters | Confound control — does *any* 3-adapter fusion help, or specifically these |
+| Adapters included | What it isolates | Status |
+|---|---|---|
+| none (baseline) | Reference point | `train_baseline.py` |
+| valence only | Valence's individual contribution | `run_ablation_models.py` |
+| emotion_ec only | Emotion's individual contribution | `run_ablation_models.py` |
+| group only | Group identity's individual contribution | `run_ablation_models.py` |
+| valence + emotion_ec | Pairwise combination | already trained (`output_custom`) |
+| valence + group | Pairwise combination | `run_ablation_models.py` |
+| emotion_ec + group | Pairwise combination | `run_ablation_models.py` |
+| valence + emotion_ec + group | All three combined | already trained (`output_full`) |
+| 3 unrelated-task adapters | Confound control — does *any* 3-adapter fusion help, or specifically these | not built yet |
 
-`train_group_adapter.py` produces the one new reusable artifact this needs
-(the `group` adapter). Building the remaining single- and multi-adapter
-models reuses the same validation-split → sweep → calibrate →
-one-time-test-evaluate pipeline already in this repo, generalized to accept
-different adapter combinations rather than always assuming `sst2`+`emotion`.
+`train_fusion.py`'s `--adapters` setting already supports any of these
+combinations, including a single adapter — when given exactly one, it
+skips the fusion layer entirely (an `AdapterFusion` layer has its own
+extra trainable weights even with only one adapter inside it, so using it
+for a "one adapter alone" row would give that row more capacity than it's
+supposed to have) and just trains a fresh head directly on that one frozen
+adapter, matching how `train_group_adapter.py` etc. train adapters
+standalone.
+
+**`run_ablation_models.py`** runs the five combinations above that aren't
+already trained — for each one, it runs `train_fusion.py` → `calibrate.py`
+→ `evaluate_test.py` back to back, with standard/default hyperparameters
+(no tuning), saving each model's results in its own output directory:
+
+```bash
+python run_ablation_models.py --drive-root /content/drive/MyDrive
+```
+
+**`summarize_ablation_results.py`** then reads every model's `summary.md`
+(the three already-trained ones plus the five just produced), prints a
+combined results table, saves it as a CSV, and draws a bar chart of F1
+across all eight models — color-coded by baseline/single/pair/full — saved
+as both a PNG and a vector PDF:
+
+```bash
+python summarize_ablation_results.py --drive-root /content/drive/MyDrive
+```
+
+The confound control (fusing three adapters trained on unrelated tasks)
+still needs sourcing suitable adapters first — it isn't part of either
+script above.
