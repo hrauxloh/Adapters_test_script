@@ -97,6 +97,15 @@ def main():
         default="best_config.json",
         help="Path to the config sweep.py wrote out, included in the summary if it exists.",
     )
+    parser.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="Also save this run's per-example true labels and predictions to "
+        "<output-dir>/test_predictions.npz. Doesn't change the metrics or the "
+        "one-time nature of this evaluation — just records what it already "
+        "computed, so a later script (bootstrap_compare.py) can compare models "
+        "against each other without re-running them.",
+    )
     args = parser.parse_args()
 
     with open(f"{args.output_dir}/calibration.json") as f:
@@ -148,6 +157,11 @@ def main():
     }
     write_summary(summary_path, args, best_config, calibration, metrics, confidences, correct)
     print(f"\nSaved summary to {summary_path}")
+
+    if args.save_predictions:
+        predictions_path = f"{args.output_dir}/test_predictions.npz"
+        np.savez(predictions_path, labels=labels, preds=preds, calibrated_probs=calibrated_probs)
+        print(f"Saved per-example predictions to {predictions_path}")
 
 
 if __name__ == "__main__":

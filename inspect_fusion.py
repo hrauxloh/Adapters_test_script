@@ -65,7 +65,11 @@ def load_trained_model(output_dir):
     for name, source in adapter_specs:
         model.load_adapter(source, load_as=name, with_head=False)
 
-    if len(adapter_specs) == 1:
+    if len(adapter_specs) == 0:
+        # The no-adapter baseline (see train_baseline.py) — nothing to
+        # activate or fuse, just the frozen base model plus its head.
+        pass
+    elif len(adapter_specs) == 1:
         # A single-adapter ablation run (see train_fusion.py) never saved a
         # fusion file — there's nothing to fuse — so just activate that one
         # adapter directly instead of trying to load a fusion layer.

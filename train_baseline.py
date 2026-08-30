@@ -8,19 +8,31 @@ kept the same. Comparing this script's final score against a fusion
 model's tells you whether the adapters are actually adding anything, or
 whether frozen BERT alone would have done just as well.
 
+Just like train_fusion.py, this script never looks at eng_test.csv — it
+checks its own progress against a validation slice held out from the
+training data, and stops early once that stops improving. The held-out
+test set only gets touched once, later, by evaluate_test.py — exactly the
+same discipline every other model in this project follows, so the
+baseline's score is a fair, non-test-tuned comparison point.
+
 Menu of what happens when you run this file, in order:
   1. Load bert-base-uncased and freeze it completely.
   2. Attach one brand-new, untrained classification head on top — this is
      the only part that will actually learn.
-  3. Train that head on the training data, checking progress against the
-     test data each epoch, until it stops improving.
-  4. Print the final accuracy/precision/recall/F1 and save the head.
+  3. Set aside a validation slice from the training data, and train the
+     head on the rest, checking progress against that slice each epoch,
+     until it stops improving.
+  4. Save the head, ready for calibrate.py and evaluate_test.py to pick up,
+     exactly like a trained fusion model.
 
 Usage:
-    python train_baseline.py --train-file eng_train.csv --test-file eng_test.csv
+    python train_baseline.py --train-file eng_train.csv --output-dir output_baseline
+    python calibrate.py --output-dir output_baseline --train-file eng_train.csv
+    python evaluate_test.py --output-dir output_baseline --test-file eng_test.csv
 """
 
 import argparse
+import json
 
 import numpy as np
 import torch
@@ -28,7 +40,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from transformers import AutoTokenizer, EarlyStoppingCallback, Trainer, TrainingArguments
 from adapters import AutoAdapterModel
 
-from data import load_split, tokenize_dataset
+from data import load_train_val_split, tokenize_dataset
 
 MODEL_NAME = "bert-base-uncased"
 HEAD_NAME = "polarization"
@@ -66,7 +78,7 @@ def compute_metrics(eval_pred):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-file", default="eng_train.csv")
-    parser.add_argument("--test-file", default="eng_test.csv")
+    parser.add_argument("--val-fraction", type=float, default=0.2, help="Fraction of --train-file held out for validation/early stopping.")
     parser.add_argument("--output-dir", default="output_baseline")
     parser.add_argument("--epochs", type=int, default=10, help="Upper bound on epochs; early stopping usually stops sooner.")
     parser.add_argument("--patience", type=int, default=2, help="Early stopping patience, in evals (epochs) without improvement.")
@@ -79,6 +91,7 @@ def main():
         default=None,
         help="Use fp16 mixed precision training. Defaults to on when a GPU is available.",
     )
+    parser.add_argument("--seed", type=int, default=42, help="Controls the train/validation split, for reproducibility.")
     args = parser.parse_args()
 
     use_fp16 = args.fp16 if args.fp16 is not None else torch.cuda.is_available()
@@ -88,8 +101,9 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    train_dataset = tokenize_dataset(load_split(args.train_file), tokenizer, args.max_length)
-    test_dataset = tokenize_dataset(load_split(args.test_file), tokenizer, args.max_length)
+    train_split, val_split = load_train_val_split(args.train_file, val_fraction=args.val_fraction, seed=args.seed)
+    train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length)
+    val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length)
 
     model = build_model()
 
@@ -120,7 +134,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=test_dataset,
+        eval_dataset=val_dataset,
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
@@ -128,10 +142,18 @@ def main():
 
     trainer.train()
 
-    metrics = trainer.evaluate()
-    print("Baseline (no adapters) test set metrics:", metrics)
+    val_metrics = trainer.evaluate()
+    print("Baseline (no adapters) validation metrics (NOT the final test score):", val_metrics)
 
     model.save_head(f"{args.output_dir}/head", HEAD_NAME)
+    # An empty adapters list tells inspect_fusion.load_trained_model (and so
+    # calibrate.py / evaluate_test.py) that this model has no adapters and no
+    # fusion layer at all — just the frozen base model plus this head.
+    with open(f"{args.output_dir}/adapters.json", "w") as f:
+        json.dump([], f, indent=2)
+    print(f"\nSaved head and adapters.json to {args.output_dir}")
+    print("Next: python calibrate.py --output-dir", args.output_dir, "--train-file", args.train_file)
+    print("Then: python evaluate_test.py --output-dir", args.output_dir, "--test-file eng_test.csv")
 
 
 if __name__ == "__main__":
