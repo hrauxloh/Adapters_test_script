@@ -28,20 +28,23 @@ TEXT_COLUMN = "text"
 LABEL_COLUMN = "polarization"  # default label column, for the polarization CSVs
 
 
-def _read_csv(csv_path: str, label_column: str = LABEL_COLUMN) -> pd.DataFrame:
+def _read_csv(csv_path: str, label_column: str = LABEL_COLUMN, label_dtype=int) -> pd.DataFrame:
     # Reads any CSV that has a "text" column plus one label column, and drops
     # any row that's missing either. Reused by every single-label dataset in
     # this project (polarization, group-identity, valence) — not specific to
     # any one of them, which is why label_column is a setting, not fixed.
+    # label_dtype defaults to int (yes/no or ordinal-as-int labels); pass
+    # label_dtype=float for a genuinely continuous label like valence or
+    # usVSthem_scale — casting those to int would truncate e.g. 0.6 to 0.
     df = pd.read_csv(csv_path)
     df = df[[TEXT_COLUMN, label_column]].dropna()
-    df[label_column] = df[label_column].astype(int)
+    df[label_column] = df[label_column].astype(label_dtype)
     return df.reset_index(drop=True)
 
 
-def load_split(csv_path: str, label_column: str = LABEL_COLUMN) -> Dataset:
+def load_split(csv_path: str, label_column: str = LABEL_COLUMN, label_dtype=int) -> Dataset:
     """Read a CSV and keep only the text/label columns."""
-    return Dataset.from_pandas(_read_csv(csv_path, label_column))
+    return Dataset.from_pandas(_read_csv(csv_path, label_column, label_dtype))
 
 
 def load_train_val_split(

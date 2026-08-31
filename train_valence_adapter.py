@@ -2,9 +2,10 @@
 WHAT THIS SCRIPT DOES
 ----------------------
 Trains a brand-new adapter — from nothing, no pretrained head start — to
-predict valence: how negative or positive a piece of text is, on a -3 to +3
-scale (SemEval-2018 Task 1, V-oc). Uses voc_train.csv / voc_val.csv /
-voc_test.csv, and never touches the polarization data at all.
+predict valence: how negative or positive a piece of text is, as a
+continuous score from 0 (very negative) to 1 (very positive). Uses
+vreg_train.csv / vreg_dev.csv, and never touches the polarization data at
+all.
 
 This is one of three "build an adapter from scratch" scripts in this
 project (the others are train_group_adapter.py and
@@ -12,21 +13,19 @@ train_emotion_adapter.py) — all three follow the same shape: attach a
 fresh adapter, add a temporary head just to train it, then keep only the
 adapter once it's done.
 
-What's different here: Valence_Code is ordinal (an ordered scale), not a
-set of unrelated categories — mistaking -3 for +3 is a much bigger error
-than mistaking it for +2. Plain classification (like train_group_adapter.py
-uses) would treat every wrong guess as equally wrong, which throws that
-ordering away. So instead of a normal classification head, this one
-predicts a single number (regression), trained so that predictions further
-from the true value are penalized more.
+What's different here: valence is a genuinely continuous quantity, not a
+set of categories — mistaking 0.9 for 0.8 is a much smaller error than
+mistaking it for 0.1. So instead of a normal classification head, this one
+predicts a single number directly (regression), trained so that
+predictions further from the true value are penalized more.
 
-voc_train.csv / voc_val.csv already come as separate files (SemEval
-provided them pre-split) — unlike train_group_adapter.py, this script
-doesn't need to carve its own validation slice out of the training file.
+vreg_train.csv / vreg_dev.csv already come as separate files (like
+train_group_adapter.py's UsVsThem files) — so neither of those two scripts
+needs to carve its own validation slice out of the training file, unlike
+train_baseline.py/train_fusion.py do for the polarization data.
 
 Menu of what happens when you run this file, in order:
-  1. Load voc_train.csv and voc_val.csv, and shift Valence_Code from
-     -3..+3 to 0..6 (an implementation detail, explained below).
+  1. Load vreg_train.csv and vreg_dev.csv.
   2. Build the model: attach one fresh, empty adapter to frozen BERT, plus
      a temporary head that outputs a single number instead of class scores.
   3. Train ONLY the adapter + temporary head, using a "how far off was the
@@ -51,10 +50,7 @@ from data import load_split, tokenize_dataset
 
 MODEL_NAME = "bert-base-uncased"  # the frozen base model the adapter attaches to
 ADAPTER_NAME = "valence"  # what this adapter will be called when saved/reloaded
-LABEL_COLUMN = "Valence_Code"  # the column in voc_*.csv we're predicting
-MIN_CODE = -3
-MAX_CODE = 3
-NUM_CLASSES = MAX_CODE - MIN_CODE + 1  # 7, used only for clipping predictions back to a valid class
+LABEL_COLUMN = "valence"  # the column in vreg_*.csv we're predicting (0..1)
 
 
 class RegressionAdapterTrainer(AdapterTrainer):
@@ -78,7 +74,7 @@ def build_model():
     model.add_adapter(ADAPTER_NAME, config=SeqBnConfig())
     # num_labels=1 -> a single raw (unbounded) output, i.e. a regression score,
     # instead of a score per class. Compare against train_group_adapter.py
-    # (num_labels=2, plain yes/no) and train_emotion_adapter.py
+    # (also 1 continuous output, on this branch) and train_emotion_adapter.py
     # (num_labels=11, multilabel=True) to see what changes for a different
     # kind of label.
     model.add_classification_head(ADAPTER_NAME, num_labels=1)
@@ -90,42 +86,29 @@ def build_model():
     return model
 
 
-def remap_labels(dataset):
-    """Shift Valence_Code from [-3, 3] to [0, 6] (0-indexed, for consistency
-    with how classification labels are handled elsewhere), while keeping it
-    a plain integer — the regression loss casts to float at compute time.
-    """
-    # e.g. -3 becomes 0, 0 becomes 3, +3 becomes 6 — just relabeling the same
-    # 7 points, nothing about their order or spacing changes.
-    return dataset.map(lambda ex: {LABEL_COLUMN: ex[LABEL_COLUMN] - MIN_CODE})
-
-
 def compute_metrics(eval_pred):
     # Regression doesn't have "precision/recall" the way yes/no classification
     # does, so this reports different, more appropriate numbers instead:
-    #   - mae: mean absolute error — on average, how many points off was
-    #     each guess? Lower is better, and this is the main number to watch.
-    #   - exact_accuracy: how often the rounded guess matched exactly.
-    #   - within_one_accuracy: how often the rounded guess was at most 1
-    #     point off — a more forgiving, still-useful measure for a 7-point
-    #     ordinal scale, where being "close" genuinely means something.
+    #   - mae: mean absolute error — on average, how far off was each guess,
+    #     in the same 0-1 units as the label? Lower is better, and this is
+    #     the main number used to pick the best checkpoint.
+    #   - correlation: how well the model's ranking of examples (more
+    #     negative to more positive) matches the true ranking, regardless of
+    #     the exact scale — 1.0 is a perfect match, 0 is no relationship.
     preds, labels = eval_pred
     preds = preds.squeeze(-1)
     mae = float(np.mean(np.abs(preds - labels)))
-    rounded = np.clip(np.round(preds), 0, NUM_CLASSES - 1)
-    exact_accuracy = float(np.mean(rounded == labels))
-    within_one_accuracy = float(np.mean(np.abs(rounded - labels) <= 1))
+    correlation = float(np.corrcoef(preds, labels)[0, 1])
     return {
         "mae": mae,
-        "exact_accuracy": exact_accuracy,
-        "within_one_accuracy": within_one_accuracy,
+        "correlation": correlation,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--train-file", default="voc_train.csv")
-    parser.add_argument("--val-file", default="voc_val.csv")
+    parser.add_argument("--train-file", default="vreg_train.csv")
+    parser.add_argument("--val-file", default="vreg_dev.csv")
     parser.add_argument("--output-dir", default="output_valence")
     parser.add_argument("--epochs", type=int, default=10, help="Upper bound; early stopping usually stops sooner.")
     parser.add_argument("--patience", type=int, default=2)
@@ -148,8 +131,10 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    train_split = remap_labels(load_split(args.train_file, label_column=LABEL_COLUMN))
-    val_split = remap_labels(load_split(args.val_file, label_column=LABEL_COLUMN))
+    # label_dtype=float keeps the continuous 0..1 score intact — the default
+    # int cast (used for yes/no labels elsewhere) would truncate it to 0.
+    train_split = load_split(args.train_file, label_column=LABEL_COLUMN, label_dtype=float)
+    val_split = load_split(args.val_file, label_column=LABEL_COLUMN, label_dtype=float)
     train_dataset = tokenize_dataset(train_split, tokenizer, args.max_length, label_column=LABEL_COLUMN)
     val_dataset = tokenize_dataset(val_split, tokenizer, args.max_length, label_column=LABEL_COLUMN)
 

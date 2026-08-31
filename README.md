@@ -223,21 +223,47 @@ meaningfully higher, the sst2/emotion adapters are adding real value; if
 the two are close, the adapters aren't contributing much beyond what
 frozen BERT's own representation already captures.
 
+## This branch: alternate valence + group-identity training data
+
+This branch (`claude/alt-valence-group-data`) swaps out the data behind two
+of the three from-scratch adapters, keeping everything else in this repo —
+the emotion adapter, the fusion/calibration/evaluation pipeline, the
+ablation runner, the bootstrap confidence intervals, the plots — identical
+to the main line of this project, since none of those treat an adapter as
+anything more than a frozen black box:
+
+- **Valence** now trains on `vreg_{train,dev,test}.csv` (`text`, `valence`
+  — a genuinely continuous score from 0 to 1), instead of the old SemEval
+  V-oc data (`voc_*.csv`, `Valence_Code`, an ordinal -3..+3 scale).
+- **Group identity** now trains on `UsVsThem_{train,valid,test}.csv`
+  (`text`, `usVSthem_scale` — also continuous, 0 to 1, how strongly a text
+  expresses in-group/out-group framing), instead of the old
+  `group_reference_data.csv` (`text`, `Group_bool`, a plain yes/no label).
+
+The group adapter's target used to be binary, so it trained as ordinary
+2-class classification. Now that it's continuous like valence, both
+adapters use the same regression approach — see below — matching this
+project's standing rule of keeping the training approach as similar as
+possible across adapters, differing only where the data genuinely forces
+it. `data.py`'s CSV loader gained a `label_dtype` setting for this reason:
+the default (`int`) is fine for yes/no labels, but would silently truncate
+a continuous score like `0.6` down to `0` — these two scripts pass
+`label_dtype=float` to keep the real value.
+
 ## Custom adapters: valence + emotion (E-c)
 
-This branch trains two adapters from scratch on SemEval-2018 Task 1 data —
-`voc_{train,val,test}.csv` (V-oc: `text`, `Valence_Code` from -3 to +3) and
-`Ec_{train,val,test}.csv` (E-c: `text` plus 11 binary emotion columns) — and
+This branch trains two adapters from scratch — valence, and emotion
+(`Ec_{train,val,test}.csv`: `text` plus 11 binary emotion columns) — and
 fuses them into a **separate** polarization model, entirely parallel to the
 original `sst2`+`emotion` one (different output directory, nothing about
 the original model's saved files is touched), so the two can be compared
 later.
 
-**Valence, as regression, not classification.** `Valence_Code` is ordinal
-(-3 up to +3), and plain multi-class classification would treat a
-prediction of `-3` for a true `+3` as no worse than a prediction of `+2` —
-it throws away the ordering. `train_valence_adapter.py` instead trains a
-single continuous output with MSE loss, which naturally penalizes
+**Valence, as regression, not classification.** Valence here is a genuinely
+continuous quantity (0 to 1), not a set of categories — mistaking 0.9 for
+0.8 is a much smaller error than mistaking it for 0.1, which plain
+classification would throw away. `train_valence_adapter.py` instead trains
+a single continuous output with MSE loss, which naturally penalizes
 predictions in proportion to how far off they are:
 
 ```bash
@@ -245,10 +271,11 @@ python train_valence_adapter.py
 ```
 
 Reports MAE (mean absolute error, the primary metric — lower is better) and
-"within-one" accuracy (predicted class within 1 of the true class) instead
-of precision/recall/F1, which don't fit a regression target. Also prints a
-naive baseline (always predicting the training-set mean) to compare
-against. Saves only the adapter to `output_valence/valence`.
+a correlation coefficient (how well the model's ranking of examples matches
+the true ranking) instead of precision/recall/F1, which don't fit a
+regression target. Also prints a naive baseline (always predicting the
+training-set mean) to compare against. Saves only the adapter to
+`output_valence/valence`.
 
 **Emotion, as multi-label, not 6-way single-label.** Unlike the pretrained
 `emotion` adapter (single-label), `Ec_*.csv` allows any number of the 11
@@ -295,27 +322,32 @@ way `sweep.py` tunes the original is future work, not done yet.
 ## Training a new adapter from scratch: group identity
 
 `sst2` and `emotion` are pretrained adapters pulled from AdapterHub. There's
-no equivalent pretrained adapter for detecting whether text references a
-social/political group, so `train_group_adapter.py` trains one from
-scratch, entirely independent of the polarization task:
+no equivalent pretrained adapter for in-group/out-group ("us vs. them")
+framing, so `train_group_adapter.py` trains one from scratch, entirely
+independent of the polarization task:
 
 ```bash
-python train_group_adapter.py --train-file group_reference_data.csv
+python train_group_adapter.py
 ```
 
-`group_reference_data.csv` (`text`, `Group_bool`) is a separate, cleaned and
-stratified-sampled dataset — unrelated to `eng_train.csv`/`eng_test.csv`,
-with its own validation split (`--val-fraction`) and early stopping, so it
-never touches the polarization test set. The new adapter uses the same
-Pfeiffer/`SeqBn` bottleneck architecture as `sst2`/`emotion`, so it's
-dimensionally compatible for fusion. Only the adapter itself is saved
-(`<output-dir>/group`) — its temporary classification head, used only to
-train it, is discarded, the same way `sst2`/`emotion` are loaded with
-`with_head=False` elsewhere in this repo.
+`UsVsThem_{train,valid,test}.csv` (`text`, `usVSthem_scale`) already comes
+pre-split, unrelated to `eng_train.csv`/`eng_test.csv` — so like
+`train_valence_adapter.py`, this script doesn't carve its own validation
+split, it just reads `--train-file`/`--val-file` directly, and never
+touches the polarization test set. Since the label here is a continuous 0-1
+score rather than yes/no, this trains the same way `train_valence_adapter.py`
+does now: a single continuous output with MSE loss (see the section above
+for why), reporting MAE and a correlation coefficient instead of
+precision/recall/F1. The new adapter uses the same Pfeiffer/`SeqBn`
+bottleneck architecture as `sst2`/`emotion`, so it's dimensionally
+compatible for fusion. Only the adapter itself is saved (`<output-dir>/group`)
+— its temporary regression head, used only to train it, is discarded, the
+same way `sst2`/`emotion` are loaded with `with_head=False` elsewhere in
+this repo.
 
-The script prints a majority-class-baseline comparison alongside its
-validation metrics, and warns explicitly if the adapter doesn't beat it —
-worth checking before using this adapter in any downstream fusion model.
+The script prints a naive-mean-baseline comparison alongside its validation
+metrics, and warns explicitly if the adapter doesn't beat it — worth
+checking before using this adapter in any downstream fusion model.
 
 This adapter is a building block, not a finished result on its own: testing
 whether group identity actually matters for polarization detection (as
