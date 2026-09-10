@@ -5,19 +5,35 @@ or `whipped` (default), by cross-referencing debate dates against the
 Commons Library free-votes briefing. Source of debate data:
 [hansard-api.parliament.uk](https://hansard-api.parliament.uk/swagger/ui/index).
 
-## Status: Step 1 only (data inspection)
+## Status: Step 1 only (data inspection) — confirmed decision: tag divisions, not all debates
 
-Nothing here does the actual free/whipped tagging yet. Before writing that,
-we need to see what a real debate record from the API actually looks like
-— its exact field names, how dates are represented, whether "house"
-(Commons vs Lords) is a field, what identifies one debate uniquely, etc.
+**Decided:** the free/whipped tag applies to *divisions* (actual recorded
+votes), not every debate section — most debates never have a vote at all,
+so "free vs. whipped" only means something for the ones that do.
 
-`explore_debates_api.py` does two things:
+Confirmed from a real run against the live API (swagger spec + a real
+`/search/debates.json` call):
+- Debate search results have fields `DebateSection`, `SittingDate`,
+  `House`, `Title`, `Rank`, `DebateSectionExtId`, wrapped in
+  `{"Results": [...], "TotalResultCount": ...}`.
+- `TotalResultCount` looks unreliable as a filtered count (it returned
+  ~1.37 million for a 14-day window) — don't trust it for pagination;
+  page with `skip`/`take` and stop when `Results` comes back empty
+  instead.
+- `queryParameters.withDivision=true` filters search results down to
+  debate sections that had at least one division — this is the filter the
+  real pipeline should use.
+- `/debates/divisions/{debateSectionExtId}.json` lists the division(s) in
+  a debate section; a division's own fields haven't been confirmed yet —
+  that's what `explore_debates_api.py`'s Step 3 checks.
+
+`explore_debates_api.py` does three things:
 1. Fetches the API's Swagger spec and prints every endpoint whose path
-   mentions "debate", with its parameters — the real, current source of
-   truth for what this API actually offers.
-2. Makes one sample debates-search call for a short date range and saves
-   the raw JSON response to a file, printing a quick summary of its shape.
+   mentions "debate", with its parameters.
+2. Makes a sample `/search/debates.json` call and saves the raw response.
+3. Finds a debate section with a division (`withDivision=true`) and fetches
+   its `/debates/divisions/{id}.json` record, saving the raw response and
+   printing the field names on the first division.
 
 ```bash
 pip install requests
@@ -25,26 +41,41 @@ python explore_debates_api.py
 ```
 
 By default it looks at the last 14 days; pass `--start-date`/`--end-date`
-(YYYY-MM-DD) for a different range, and `--output` for where to save the
-raw JSON.
+(YYYY-MM-DD) for a different range if no divisions turn up in that window.
 
-**Note on the endpoint/parameter names in this script:** they're a
-best-understanding guess at this API's conventions, not verified against a
-live response — the sandbox this was written in couldn't reach
-`hansard-api.parliament.uk` at all (blocked by the sandbox's own network
-policy, confirmed against several unrelated domains too). Run this
-somewhere with normal internet access, and treat step 1's printed endpoint
-list as ground truth over anything guessed in the script — if it differs,
-that's the real schema to build against, not this one.
+`explore_free_votes_briefing.py` looks at the other half of this project —
+the Commons Library's ["Free votes in the House of Commons since
+1979"](https://commonslibrary.parliament.uk/research-briefings/SN04793/)
+briefing, which reportedly includes a downloadable spreadsheet of known
+free votes. This hasn't been inspected yet either (see note below). It
+fetches the briefing page, finds any spreadsheet/PDF attachment link in
+the HTML, downloads it, and if it's a spreadsheet, prints its columns and
+first few rows so we can see the real schema:
+
+```bash
+pip install requests pandas openpyxl
+python explore_free_votes_briefing.py
+```
+
+**Note on anything not yet confirmed against a live response:** the
+sandbox this was written in couldn't reach either
+`hansard-api.parliament.uk` or `commonslibrary.parliament.uk` at all
+(blocked by the sandbox's own network policy — confirmed against several
+unrelated domains too, including Wikipedia). Everything marked "confirmed"
+above came from an actual run of `explore_debates_api.py` reported back;
+anything about the division fields or the briefing spreadsheet is still
+unverified — run the scripts above somewhere with normal internet access
+and report back what they print.
 
 ## Next steps (not started)
 
-Once we can see a real debate record:
-- Confirm what field(s) identify its date and House.
-- Find/access the Commons Library free-votes briefing data (likely a PDF
-  or a research briefing page — not yet located or parsed) and figure out
-  how its dates map onto individual debates (a briefing entry may cover a
-  whole day, a specific division, or a specific bill's stages — matters
-  for how precisely "free" can be attached to a debate record).
-- Build the actual cross-referencing script, defaulting every debate to
-  `whipped` unless a briefing entry says otherwise.
+Once we can see a real division record and the briefing spreadsheet's
+actual columns:
+- Figure out how the briefing's entries map onto individual divisions (by
+  date? by division number? by bill/motion title matched against
+  `Title`?) — this determines how precisely "free" can be attached to a
+  specific division rather than just a date.
+- Build the actual cross-referencing script: for each division found via
+  `withDivision=true` search (paginated safely, not trusting
+  `TotalResultCount`), look up its date/details against the briefing data,
+  defaulting to `whipped` unless the briefing says otherwise.

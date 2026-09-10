@@ -168,15 +168,83 @@ def explore_sample_debates(start_date, end_date, output_path):
               f"open {output_path} directly and look.")
 
 
+def explore_sample_division(start_date, end_date, output_path):
+    # Confirmed decision: the free/whipped tag applies to DIVISIONS (actual
+    # recorded votes), not every debate section — most debates never have a
+    # vote at all, so "free vs whipped" only means something for the ones
+    # that do. queryParameters.withDivision=true (found in the swagger
+    # listing above) filters the search down to debate sections that had at
+    # least one division.
+    print()
+    print("=" * 70)
+    print(f"STEP 3: sample DIVISION record ({start_date} to {end_date})")
+    print("=" * 70)
+    search_url = f"{BASE_URL}/search/debates.json"
+    params = {
+        "queryParameters.startDate": start_date,
+        "queryParameters.endDate": end_date,
+        "queryParameters.house": "Commons",
+        "queryParameters.withDivision": "true",
+        "queryParameters.take": 5,
+    }
+    print(f"  GET {search_url}")
+    print(f"  params: {params}")
+    try:
+        response = requests.get(search_url, params=params, timeout=20)
+    except requests.RequestException as exc:
+        print(f"  Request failed: {exc}")
+        return
+    print(f"  HTTP {response.status_code}")
+    if response.status_code != 200:
+        print(f"  Response body (first 1000 chars): {response.text[:1000]}")
+        return
+
+    data = response.json()
+    results = data.get("Results", [])
+    if not results:
+        print(f"  No debate sections with a division found in {start_date}..{end_date}.")
+        print("  Try a wider date range with --start-date/--end-date.")
+        return
+
+    section_id = results[0]["DebateSectionExtId"]
+    print(f"  Found a debate section with a division: {section_id} ({results[0].get('Title')})")
+
+    divisions_url = f"{BASE_URL}/debates/divisions/{section_id}.json"
+    print(f"  GET {divisions_url}")
+    try:
+        div_response = requests.get(divisions_url, timeout=20)
+    except requests.RequestException as exc:
+        print(f"  Request failed: {exc}")
+        return
+    print(f"  HTTP {div_response.status_code}")
+    if div_response.status_code != 200:
+        print(f"  Response body (first 1000 chars): {div_response.text[:1000]}")
+        return
+
+    divisions = div_response.json()
+    with open(output_path, "w") as f:
+        json.dump(divisions, f, indent=2)
+    print(f"  Saved full raw response to {output_path}")
+
+    if isinstance(divisions, list) and divisions:
+        print(f"  Fields on the first division record ({len(divisions)} division(s) in this section):")
+        for key, value in divisions[0].items():
+            print(f"    {key}: {str(value)[:80]}")
+    else:
+        print(f"  Response shape wasn't a non-empty list — open {output_path} directly and look.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-date", default=(date.today() - timedelta(days=14)).isoformat())
     parser.add_argument("--end-date", default=date.today().isoformat())
     parser.add_argument("--output", default="sample_debates_response.json")
+    parser.add_argument("--division-output", default="sample_division_response.json")
     args = parser.parse_args()
 
     explore_swagger()
     explore_sample_debates(args.start_date, args.end_date, args.output)
+    explore_sample_division(args.start_date, args.end_date, args.division_output)
 
     print()
     print("=" * 70)
