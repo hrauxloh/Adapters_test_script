@@ -231,7 +231,15 @@ def explore_sample_division(start_date, end_date, output_path):
         for key, value in divisions[0].items():
             print(f"    {key}: {str(value)[:80]}")
     else:
-        print(f"  Response shape wasn't a non-empty list — open {output_path} directly and look.")
+        # Print the raw content directly rather than just noting the shape
+        # was unexpected — this is the whole point of an inspection step:
+        # show what's actually there instead of needing another round trip.
+        print(f"  Response shape wasn't a non-empty list. Raw content: {divisions!r}")
+        if isinstance(divisions, list) and not divisions:
+            print("  It's an empty list — this debate section had no divisions after all,")
+            print("  even though queryParameters.withDivision=true returned it. That filter")
+            print("  may be as unreliable as TotalResultCount was. Try a different/wider")
+            print("  date range, or a date you know had a big Commons vote.")
 
 
 def main():

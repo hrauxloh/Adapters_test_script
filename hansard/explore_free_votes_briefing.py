@@ -36,6 +36,18 @@ import requests
 
 BRIEFING_URL = "https://commonslibrary.parliament.uk/research-briefings/SN04793/"
 SPREADSHEET_EXTENSIONS = (".xlsx", ".xls", ".csv", ".pdf")
+# Without a browser-like User-Agent, this site's Cloudflare bot-check
+# returns a "Just a moment..." challenge page instead of the real content.
+# A realistic header clears basic checks; if this site's Cloudflare
+# configuration requires a JS challenge, this won't be enough — see the
+# manual fallback printed below if it still fails.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
 def find_attachment_links(html):
@@ -64,11 +76,23 @@ def main():
     print(f"Fetching briefing page: {args.briefing_url}")
     print("=" * 70)
     try:
-        response = requests.get(args.briefing_url, timeout=20)
+        response = requests.get(args.briefing_url, headers=BROWSER_HEADERS, timeout=20)
     except requests.RequestException as exc:
         print(f"Request failed: {exc}")
         return
     print(f"HTTP {response.status_code}")
+    if "Just a moment" in response.text or "challenges.cloudflare.com" in response.text:
+        print("Got a Cloudflare bot-check challenge page instead of the real content —")
+        print("a plain script request doesn't look enough like a browser to this site,")
+        print("even with a browser User-Agent header. This site likely needs an actual")
+        print("browser (JS-capable) to get past it, which this script can't do.")
+        print()
+        print("Fallback: open this URL in your own browser, find the download link for")
+        print("the free-votes spreadsheet/data, and either:")
+        print("  (a) paste the direct file URL here and re-run with --briefing-url, or")
+        print("  (b) download it yourself and upload the file directly (e.g. to Colab),")
+        print("      then tell me its columns so we can build the cross-referencing step.")
+        return
     if response.status_code != 200:
         print(f"Response body (first 1000 chars): {response.text[:1000]}")
         return
@@ -96,7 +120,7 @@ def main():
     print()
     print(f"Downloading: {target}")
     try:
-        file_response = requests.get(target, timeout=30)
+        file_response = requests.get(target, headers=BROWSER_HEADERS, timeout=30)
     except requests.RequestException as exc:
         print(f"Download failed: {exc}")
         return
