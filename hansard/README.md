@@ -74,14 +74,22 @@ recorded division (an actual vote) in a given date range, as one summary
 table — one row per debate section (`DebateSection`, `SittingDate`,
 `House`, `Title`, `Rank`, `DebateSectionExtId`), no per-item text.
 
-It only asks the API for debates that already have a division
-(`queryParameters.withDivision=true`), so there's no need to fetch every
-debate and cross-reference — the filtering happens server-side. Paginates
-with `skip`/`take` and stops on the first empty page rather than trusting
-`TotalResultCount` (confirmed unreliable earlier). Retries a failed page
-a couple of times with backoff before giving up, and returns whatever was
-already collected rather than losing a long pull to one dropped
-connection.
+**`queryParameters.withDivision=true` does not actually filter anything —
+confirmed by running it.** It was expected to filter `/search/debates.json`
+down to only division-bearing debates server-side, but a real run
+returned every debate regardless (this lines up with an earlier hint: a
+debate it claimed had a division came back with zero divisions when
+checked directly). So this script fetches *every* debate in the date
+range, then checks each one individually against
+`/debates/divisions/{id}.json`, keeping only the ones that genuinely come
+back with at least one division — more API calls, but checking ground
+truth instead of trusting a parameter that's now failed twice.
+
+Paginates the initial debate fetch with `skip`/`take` and stops on the
+first empty page rather than trusting `TotalResultCount` (confirmed
+unreliable earlier too). Retries a failed request a couple of times with
+backoff before giving up, and returns whatever was already collected
+rather than losing a long pull to one dropped connection.
 
 ```bash
 pip install requests pandas
