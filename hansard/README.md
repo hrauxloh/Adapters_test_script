@@ -67,6 +67,35 @@ anything about the division fields or the briefing spreadsheet is still
 unverified — run the scripts above somewhere with normal internet access
 and report back what they print.
 
+## Scaled-up collection: division-bearing debates in a date range
+
+`collect_divisions.py` collects every Commons debate section with a
+recorded division (an actual vote) in a given date range, as one summary
+table — one row per debate section (`DebateSection`, `SittingDate`,
+`House`, `Title`, `Rank`, `DebateSectionExtId`), no per-item text.
+
+It only asks the API for debates that already have a division
+(`queryParameters.withDivision=true`), so there's no need to fetch every
+debate and cross-reference — the filtering happens server-side. Paginates
+with `skip`/`take` and stops on the first empty page rather than trusting
+`TotalResultCount` (confirmed unreliable earlier). Retries a failed page
+a couple of times with backoff before giving up, and returns whatever was
+already collected rather than losing a long pull to one dropped
+connection.
+
+```bash
+pip install requests pandas
+# validate against one day first
+python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01
+
+# then scale up
+python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output may_divisions.csv
+```
+
+Not yet verified against a live response (same sandbox network restriction
+as everything else here) — run the single-day command first and check the
+output looks sensible before trusting the full-range run.
+
 ## Next steps (not started)
 
 Once we can see a real division record and the briefing spreadsheet's
