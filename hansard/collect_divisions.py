@@ -121,12 +121,25 @@ def main():
     parser.add_argument("--end-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--house", default="Commons")
     parser.add_argument("--take", type=int, default=20, help="Results per page.")
+    parser.add_argument(
+        "--debate-section",
+        default="Commons Chamber",
+        help="Only keep debates whose DebateSection matches this exactly (e.g. excludes "
+        "Westminster Hall, Public Bill Committees, etc.). Pass an empty string to keep all.",
+    )
     parser.add_argument("--output", default="divisions_summary.csv")
     args = parser.parse_args()
 
     print(f"Collecting all {args.house} debates, {args.start_date} to {args.end_date}...")
     all_debates = fetch_all_debates(args.start_date, args.end_date, args.house, args.take)
-    print(f"\nFound {len(all_debates)} debate(s) total. Checking each for an actual division...")
+    print(f"Found {len(all_debates)} debate(s) total.")
+
+    if args.debate_section:
+        before = len(all_debates)
+        all_debates = [d for d in all_debates if d.get("DebateSection") == args.debate_section]
+        print(f"Kept {len(all_debates)} of {before} matching DebateSection == {args.debate_section!r}.")
+
+    print("Checking each remaining debate for an actual division...")
 
     kept = []
     for i, debate in enumerate(all_debates, start=1):

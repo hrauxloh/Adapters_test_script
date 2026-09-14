@@ -91,6 +91,13 @@ unreliable earlier too). Retries a failed request a couple of times with
 backoff before giving up, and returns whatever was already collected
 rather than losing a long pull to one dropped connection.
 
+By default it only keeps debates whose `DebateSection` is exactly
+`"Commons Chamber"` (excluding Westminster Hall, Public Bill Committees,
+etc.) — pass `--debate-section ""` to keep everything, or a different
+value to filter on something else. This filter runs *before* the
+division-check step, so it also cuts down on API calls for debates that
+would be discarded anyway.
+
 ```bash
 pip install requests pandas
 # validate against one day first
@@ -100,9 +107,8 @@ python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01
 python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output may_divisions.csv
 ```
 
-Not yet verified against a live response (same sandbox network restriction
-as everything else here) — run the single-day command first and check the
-output looks sensible before trusting the full-range run.
+Confirmed working against a live run (see the note above about
+`withDivision` — this script no longer relies on it).
 
 ## Next steps (not started)
 
