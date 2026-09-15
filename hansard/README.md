@@ -67,73 +67,80 @@ anything about the division fields or the briefing spreadsheet is still
 unverified — run the scripts above somewhere with normal internet access
 and report back what they print.
 
-## Scaled-up collection: division-bearing debates in a date range
+## Scaled-up collection: full vote breakdown for every division in a date range
 
-`collect_divisions.py` collects every Commons debate section with a
-recorded division (an actual vote) in a given date range, as one summary
-table — one row per debate section (`DebateSection`, `SittingDate`,
-`House`, `Title`, `Rank`, `DebateSectionExtId`), no per-item text.
+**Important correction:** `collect_divisions.py` originally chained
+through `hansard-api.parliament.uk` (search debates → filter to Commons
+Chamber → check each for a division) to eventually try to reach full vote
+detail. That chain is gone. A real division-detail schema turned out to
+come from a completely **separate, dedicated API**:
+[commonsvotes-api.parliament.uk](https://commonsvotes-api.parliament.uk/swagger/ui/index)
+— confirmed by finding real endpoint URLs in an existing R package's
+source (`houseofcommonslibrary/clvotes`) and then verifying them against
+this API's live Swagger spec and a real search + detail call:
 
-**`queryParameters.withDivision=true` does not actually filter anything —
-confirmed by running it.** It was expected to filter `/search/debates.json`
-down to only division-bearing debates server-side, but a real run
-returned every debate regardless (this lines up with an earlier hint: a
-debate it claimed had a division came back with zero divisions when
-checked directly). So this script fetches *every* debate in the date
-range, then checks each one individually against
-`/debates/divisions/{id}.json`, keeping only the ones that genuinely come
-back with at least one division — more API calls, but checking ground
-truth instead of trusting a parameter that's now failed twice.
+- `/data/divisions.json/search` takes real `startDate`/`endDate`/`skip`/`take`
+  parameters that **actually filter** (unlike hansard-api's search, whose
+  `withDivision` filter and `TotalResultCount` both turned out to be
+  unreliable). There's no `house` parameter, because this API only ever
+  covers the Commons.
+- Search results already include `AyeCount`/`NoCount`/`AyeTellers`/`NoTellers`
+  directly, but the full member-by-member `Ayes`/`Noes`/`NoVoteRecorded`
+  lists come back empty — one follow-up call per division, to
+  `/data/division/{DivisionId}.json`, fills those in.
 
-Paginates the initial debate fetch with `skip`/`take` and stops on the
-first empty page rather than trusting `TotalResultCount` (confirmed
-unreliable earlier too). Retries a failed request a couple of times with
-backoff before giving up, and returns whatever was already collected
-rather than losing a long pull to one dropped connection.
+So the script now queries `commonsvotes-api` directly: page through the
+search endpoint for the date range, then fetch full detail for every
+division found. No more debate search, no more `DebateSection` filtering,
+no more guessing which field holds an ID — `DivisionId` is a confirmed,
+reliable field straight from the search results. `explore_commonsvotes_api.py`
+is the (now superseded, but kept for reference) script that discovered
+this.
 
-By default it only keeps debates whose `DebateSection` is exactly
-`"Commons Chamber"` (excluding Westminster Hall, Public Bill Committees,
-etc.) — pass `--debate-section ""` to keep everything, or a different
-value to filter on something else. This filter runs *before* the
-division-check step, so it also cuts down on API calls for debates that
-would be discarded anyway.
+**No turnout/attendance filtering happens here.** Every division found
+gets collected regardless of `AyeCount + NoCount` — filter the saved data
+afterwards for whatever attendance threshold matters, without needing to
+re-fetch anything.
 
-```bash
-pip install requests pandas
-# validate against one day first
-python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01 --output-dir divisions_test
+For each month, saves two files:
+- `divisions_YYYY-MM.csv` — one row per division (date, title, Aye/No
+  counts, EVEL flags, etc.)
+- `votes_YYYY-MM.csv` — one row per individual member's vote, tagged
+  `Aye` / `No` / `AyeTeller` / `NoTeller` / `NoVoteRecorded`, with their
+  party and other details
 
-# then scale up
-python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output-dir divisions_may2025
-```
+If a division's detail call fails, its row is still saved using just the
+search-result summary (still has Aye/No counts and tellers, just not the
+full member lists) rather than being dropped — verified with mocked
+responses covering both the full-detail and fallback cases.
 
-Confirmed working against a live run (see the note above about
-`withDivision` — this script no longer relies on it).
-
-**A third API quirk, found when trying a big multi-year range:** requesting
-2010-01-01 to 2024-12-31 in one call only ever returned the last couple of
-months of that range — the search endpoint appears to return results
-newest-first and silently caps how far pagination actually reaches for one
-query, rather than paging through everything. The script splits any date
-range into calendar-month chunks automatically and queries each one
-separately.
+**Same defensive month-chunking as before, kept as a precaution:**
+hansard-api's search endpoint was confirmed to silently cap how far a big
+multi-year query's pagination reaches; since both APIs share the same
+query-parameter conventions (likely the same underlying platform), this
+script still splits any date range into calendar-month chunks rather than
+querying a huge range in one call, even though this specific quirk hasn't
+been confirmed on `commonsvotes-api` itself.
 
 **Resumable by design**, for a long unattended run from a laptop that
 might lose wifi, or a Colab session that might disconnect: `--output-dir`
-gets one file per month (`divisions_YYYY-MM.csv`), written the moment
-that month finishes — not held in memory until the end. Before doing any
-work for a month, it checks whether that file already exists and skips
-it if so (months that genuinely found nothing are still saved, as an
-empty file, so "checked, found nothing" is distinguishable from "not
-checked yet"). That means if the run stops for any reason, re-running the
-exact same command later resumes automatically — verified with a test
-covering a fresh run, an identical re-run (confirmed zero network calls,
-everything skipped), and extending the date range (confirmed only the
-new month gets fetched). Point `--output-dir` at a mounted Google Drive
-folder, not local Colab storage, so the files themselves survive even if
-the runtime is reclaimed entirely.
+gets its own pair of files per month, written the moment that month
+finishes. Before doing any work for a month, it checks whether its
+`divisions_YYYY-MM.csv` already exists and skips the month entirely if so
+(months that genuinely found nothing are still saved, as an empty file,
+so "checked, found nothing" is distinguishable from "not checked yet").
+Verified with a test covering a fresh run, an identical re-run (zero
+network calls, everything skipped), and the full-detail/fallback paths
+above. Point `--output-dir` at a mounted Google Drive folder, not local
+Colab storage, so the files themselves survive even if the runtime is
+reclaimed entirely.
 
 ```bash
+pip install requests pandas
+# validate against one month first
+python collect_divisions.py --start-date 2024-01-01 --end-date 2024-01-31 --output-dir divisions_test
+
+# then scale up
 python collect_divisions.py --start-date 2010-01-01 --end-date 2023-12-31 \
   --output-dir /content/drive/MyDrive/hansard_divisions
 ```
@@ -141,7 +148,8 @@ python collect_divisions.py --start-date 2010-01-01 --end-date 2023-12-31 \
 Combine the per-month files into one table later with:
 ```python
 import glob, pandas as pd
-combined = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive/hansard_divisions/divisions_*.csv")])
+divisions = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive/hansard_divisions/divisions_*.csv")])
+votes = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive/hansard_divisions/votes_*.csv")])
 ```
 
 ## Next steps (not started)
