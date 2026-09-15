@@ -25,27 +25,63 @@ trusts it. Instead it pages with skip/take and stops the moment a page
 comes back empty — that's the only reliable way to know when everything's
 been collected.
 
+A long date range (multiple years) also ran into a THIRD API quirk:
+requesting 2010-01-01 to 2024-12-31 in one go only ever returned results
+from the last couple of months of the range. Results appear to come back
+newest-first, and the search endpoint seems to silently cap how far
+pagination actually reaches for one query — so a big range just returns
+its most recent slice and then empty pages, long before covering
+everything. To work around this, this script now queries one calendar
+month at a time and stitches the results together, which also means
+results get written to the output CSV after each month instead of only
+at the very end — a long multi-year run surviving a crash/disconnect
+partway through won't lose everything collected so far.
+
 Menu of what happens when you run this file, in order:
-  1. Request page after page of ALL debates for the given date range,
-     stopping when a page comes back empty.
-  2. For each debate found, call /debates/divisions/{id}.json and keep it
+  1. Split the requested date range into calendar-month chunks.
+  2. For each month: request page after page of ALL debates in that
+     month, stopping when a page comes back empty.
+  3. For each debate found, call /debates/divisions/{id}.json and keep it
      only if that comes back with at least one division.
-  3. Save the kept debates to one CSV, one row per debate section.
-  4. Print a short summary (how many checked, how many kept).
+  4. Append that month's kept debates to the output CSV immediately.
+  5. Print a short summary (how many checked, how many kept, in total).
 
 Usage:
     python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01
-    python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output may_divisions.csv
+    python collect_divisions.py --start-date 2020-01-01 --end-date 2024-12-31 --output divisions_2020_2024.csv
 """
 
 import argparse
+import calendar
+import os
 import time
+from datetime import date
 
 import pandas as pd
 import requests
 
 BASE_URL = "https://hansard-api.parliament.uk"
 SEARCH_PATH = "/search/debates.json"
+
+
+def month_chunks(start_date, end_date):
+    """Yield (chunk_start, chunk_end) ISO date strings, one per calendar
+    month, covering [start_date, end_date] inclusive.
+    """
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    current = date(start.year, start.month, 1)
+
+    while current <= end:
+        last_day = calendar.monthrange(current.year, current.month)[1]
+        chunk_start = max(current, start)
+        chunk_end = min(date(current.year, current.month, last_day), end)
+        yield chunk_start.isoformat(), chunk_end.isoformat()
+
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
 
 
 def fetch_with_retry(url, params=None, max_attempts=3):
@@ -130,37 +166,45 @@ def main():
     parser.add_argument("--output", default="divisions_summary.csv")
     args = parser.parse_args()
 
-    print(f"Collecting all {args.house} debates, {args.start_date} to {args.end_date}...")
-    all_debates = fetch_all_debates(args.start_date, args.end_date, args.house, args.take)
-    print(f"Found {len(all_debates)} debate(s) total.")
+    chunks = list(month_chunks(args.start_date, args.end_date))
+    print(f"Splitting {args.start_date} to {args.end_date} into {len(chunks)} month-chunk(s).")
 
-    if args.debate_section:
-        before = len(all_debates)
-        all_debates = [d for d in all_debates if d.get("DebateSection") == args.debate_section]
-        print(f"Kept {len(all_debates)} of {before} matching DebateSection == {args.debate_section!r}.")
+    total_checked = 0
+    total_kept = 0
 
-    print("Checking each remaining debate for an actual division...")
+    for chunk_i, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+        print(f"\n{'=' * 60}\nMonth {chunk_i}/{len(chunks)}: {chunk_start} to {chunk_end}\n{'=' * 60}")
 
-    kept = []
-    for i, debate in enumerate(all_debates, start=1):
-        ext_id = debate["DebateSectionExtId"]
-        if has_division(ext_id):
-            kept.append(debate)
-            print(f"  [{i}/{len(all_debates)}] {ext_id}  HAS a division  ({debate.get('Title')})")
-        else:
-            print(f"  [{i}/{len(all_debates)}] {ext_id}  no division")
+        debates = fetch_all_debates(chunk_start, chunk_end, args.house, args.take)
+        print(f"Found {len(debates)} debate(s) this month.")
 
-    if not kept:
-        print("\nNo division-bearing debates found in this date range.")
-        return
+        if args.debate_section:
+            before = len(debates)
+            debates = [d for d in debates if d.get("DebateSection") == args.debate_section]
+            print(f"Kept {len(debates)} of {before} matching DebateSection == {args.debate_section!r}.")
 
-    df = pd.DataFrame(kept)
-    df.to_csv(args.output, index=False)
+        kept = []
+        for i, debate in enumerate(debates, start=1):
+            ext_id = debate["DebateSectionExtId"]
+            if has_division(ext_id):
+                kept.append(debate)
+                print(f"  [{i}/{len(debates)}] {ext_id}  HAS a division  ({debate.get('Title')})")
+            else:
+                print(f"  [{i}/{len(debates)}] {ext_id}  no division")
 
-    print(f"\n{len(kept)} of {len(all_debates)} debate(s) actually had a division.")
-    print(f"Saved to {args.output}")
-    print(f"\nColumns: {list(df.columns)}")
-    print(df.head(10).to_string())
+        total_checked += len(debates)
+        total_kept += len(kept)
+
+        if kept:
+            # Append immediately — a crash/disconnect on a later month
+            # doesn't lose the months already collected.
+            file_exists = os.path.exists(args.output)
+            pd.DataFrame(kept).to_csv(args.output, mode="a", header=not file_exists, index=False)
+            print(f"Appended {len(kept)} division-bearing debate(s) to {args.output}")
+
+    print(f"\n{'=' * 60}")
+    print(f"Done. {total_kept} of {total_checked} debate(s) across the full range had a division.")
+    print(f"Results saved to {args.output}")
 
 
 if __name__ == "__main__":

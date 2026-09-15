@@ -110,6 +110,16 @@ python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --outp
 Confirmed working against a live run (see the note above about
 `withDivision` — this script no longer relies on it).
 
+**A third API quirk, found when trying a big multi-year range:** requesting
+2010-01-01 to 2024-12-31 in one call only ever returned the last couple of
+months of that range — the search endpoint appears to return results
+newest-first and silently caps how far pagination actually reaches for one
+query, rather than paging through everything. The script now splits any
+date range into calendar-month chunks automatically and queries each one
+separately, appending results to the output CSV after every month — so a
+long multi-year pull also survives a crash/disconnect partway through
+without losing everything collected so far.
+
 ## Next steps (not started)
 
 Once we can see a real division record and the briefing spreadsheet's
