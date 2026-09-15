@@ -101,10 +101,10 @@ would be discarded anyway.
 ```bash
 pip install requests pandas
 # validate against one day first
-python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01
+python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01 --output-dir divisions_test
 
 # then scale up
-python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output may_divisions.csv
+python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-22 --output-dir divisions_may2025
 ```
 
 Confirmed working against a live run (see the note above about
@@ -114,11 +114,35 @@ Confirmed working against a live run (see the note above about
 2010-01-01 to 2024-12-31 in one call only ever returned the last couple of
 months of that range — the search endpoint appears to return results
 newest-first and silently caps how far pagination actually reaches for one
-query, rather than paging through everything. The script now splits any
-date range into calendar-month chunks automatically and queries each one
-separately, appending results to the output CSV after every month — so a
-long multi-year pull also survives a crash/disconnect partway through
-without losing everything collected so far.
+query, rather than paging through everything. The script splits any date
+range into calendar-month chunks automatically and queries each one
+separately.
+
+**Resumable by design**, for a long unattended run from a laptop that
+might lose wifi, or a Colab session that might disconnect: `--output-dir`
+gets one file per month (`divisions_YYYY-MM.csv`), written the moment
+that month finishes — not held in memory until the end. Before doing any
+work for a month, it checks whether that file already exists and skips
+it if so (months that genuinely found nothing are still saved, as an
+empty file, so "checked, found nothing" is distinguishable from "not
+checked yet"). That means if the run stops for any reason, re-running the
+exact same command later resumes automatically — verified with a test
+covering a fresh run, an identical re-run (confirmed zero network calls,
+everything skipped), and extending the date range (confirmed only the
+new month gets fetched). Point `--output-dir` at a mounted Google Drive
+folder, not local Colab storage, so the files themselves survive even if
+the runtime is reclaimed entirely.
+
+```bash
+python collect_divisions.py --start-date 2010-01-01 --end-date 2023-12-31 \
+  --output-dir /content/drive/MyDrive/hansard_divisions
+```
+
+Combine the per-month files into one table later with:
+```python
+import glob, pandas as pd
+combined = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive/hansard_divisions/divisions_*.csv")])
+```
 
 ## Next steps (not started)
 

@@ -31,24 +31,44 @@ from the last couple of months of the range. Results appear to come back
 newest-first, and the search endpoint seems to silently cap how far
 pagination actually reaches for one query — so a big range just returns
 its most recent slice and then empty pages, long before covering
-everything. To work around this, this script now queries one calendar
-month at a time and stitches the results together, which also means
-results get written to the output CSV after each month instead of only
-at the very end — a long multi-year run surviving a crash/disconnect
-partway through won't lose everything collected so far.
+everything. To work around this, this script queries one calendar month
+at a time and stitches the results together.
+
+RESUMABLE BY DESIGN, for long unattended runs (e.g. multiple years, run
+from a laptop that might lose wifi, or a Colab session that might
+disconnect): each month's results are saved as their OWN file
+(divisions_YYYY-MM.csv) in --output-dir, written the moment that month is
+done — not held in memory until the very end. Before doing any work for a
+month, the script checks whether that month's file already exists and
+skips it if so (including months that genuinely found zero divisions,
+saved as an empty file with just a header, so "already checked, found
+nothing" is distinguishable from "not checked yet").
+
+That means: if this stops for ANY reason — wifi drop, Colab timeout, you
+closing the laptop — nothing already written is lost, and re-running the
+EXACT SAME command later just picks up at the first month that doesn't
+have a file yet. Point --output-dir at a Google Drive folder (already
+mounted) rather than local Colab storage, so the files themselves survive
+even if the runtime is reclaimed entirely.
 
 Menu of what happens when you run this file, in order:
   1. Split the requested date range into calendar-month chunks.
-  2. For each month: request page after page of ALL debates in that
-     month, stopping when a page comes back empty.
-  3. For each debate found, call /debates/divisions/{id}.json and keep it
+  2. For each month, in order: if divisions_YYYY-MM.csv already exists in
+     --output-dir, skip it — already done.
+  3. Otherwise: request page after page of ALL debates in that month,
+     stopping when a page comes back empty.
+  4. For each debate found, call /debates/divisions/{id}.json and keep it
      only if that comes back with at least one division.
-  4. Append that month's kept debates to the output CSV immediately.
-  5. Print a short summary (how many checked, how many kept, in total).
+  5. Save that month's results (even if empty) to its own file
+     immediately, before moving to the next month.
+  6. Print a short summary at the end (how many checked, how many kept,
+     across every month processed this run).
 
 Usage:
-    python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01
-    python collect_divisions.py --start-date 2020-01-01 --end-date 2024-12-31 --output divisions_2020_2024.csv
+    python collect_divisions.py --start-date 2025-05-01 --end-date 2025-05-01 --output-dir /content/drive/MyDrive/hansard_divisions
+    python collect_divisions.py --start-date 2010-01-01 --end-date 2023-12-31 --output-dir /content/drive/MyDrive/hansard_divisions
+
+    (re-running the same command later resumes automatically — already-done months are skipped)
 """
 
 import argparse
@@ -163,16 +183,34 @@ def main():
         help="Only keep debates whose DebateSection matches this exactly (e.g. excludes "
         "Westminster Hall, Public Bill Committees, etc.). Pass an empty string to keep all.",
     )
-    parser.add_argument("--output", default="divisions_summary.csv")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Folder to save one divisions_YYYY-MM.csv file per month into. "
+        "Point this at a mounted Google Drive folder for a long run, so "
+        "results survive even if the Colab runtime itself is lost.",
+    )
     args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
 
     chunks = list(month_chunks(args.start_date, args.end_date))
     print(f"Splitting {args.start_date} to {args.end_date} into {len(chunks)} month-chunk(s).")
 
     total_checked = 0
     total_kept = 0
+    skipped = 0
 
     for chunk_i, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+        month_label = chunk_start[:7]  # "YYYY-MM"
+        month_file = os.path.join(args.output_dir, f"divisions_{month_label}.csv")
+
+        if os.path.exists(month_file):
+            print(f"Month {chunk_i}/{len(chunks)}: {month_label} — already done, skipping "
+                  f"({month_file})")
+            skipped += 1
+            continue
+
         print(f"\n{'=' * 60}\nMonth {chunk_i}/{len(chunks)}: {chunk_start} to {chunk_end}\n{'=' * 60}")
 
         debates = fetch_all_debates(chunk_start, chunk_end, args.house, args.take)
@@ -195,16 +233,20 @@ def main():
         total_checked += len(debates)
         total_kept += len(kept)
 
-        if kept:
-            # Append immediately — a crash/disconnect on a later month
-            # doesn't lose the months already collected.
-            file_exists = os.path.exists(args.output)
-            pd.DataFrame(kept).to_csv(args.output, mode="a", header=not file_exists, index=False)
-            print(f"Appended {len(kept)} division-bearing debate(s) to {args.output}")
+        # Written even when empty (just a header row) — that's what marks
+        # this month as "checked, found nothing" rather than "not done yet"
+        # for the resume check above.
+        known_columns = ["DebateSection", "SittingDate", "House", "Title", "Rank", "DebateSectionExtId"]
+        df = pd.DataFrame(kept) if kept else pd.DataFrame(columns=known_columns)
+        df.to_csv(month_file, index=False)
+        print(f"Saved {len(kept)} division-bearing debate(s) to {month_file}")
 
     print(f"\n{'=' * 60}")
-    print(f"Done. {total_kept} of {total_checked} debate(s) across the full range had a division.")
-    print(f"Results saved to {args.output}")
+    print(f"Done this run: {total_kept} of {total_checked} debate(s) had a division "
+          f"({skipped} already-done month(s) skipped).")
+    print(f"Per-month files are in {args.output_dir}")
+    print(f"To combine them into one table later: "
+          f"pd.concat([pd.read_csv(f) for f in glob.glob('{args.output_dir}/divisions_*.csv')])")
 
 
 if __name__ == "__main__":
