@@ -73,6 +73,34 @@ def find_debate(date, title, house="Commons"):
     return None
 
 
+def list_debates_on_date(date, house="Commons"):
+    print()
+    print("=" * 70)
+    print(f"STEP 1b: the exact-title lookup found nothing — listing every real")
+    print(f"debate title on {date} instead, to see how they actually relate")
+    print(f"to the division's title")
+    print("=" * 70)
+    url = f"{BASE_URL}/search/debates.json"
+    params = {
+        "queryParameters.house": house,
+        "queryParameters.startDate": date,
+        "queryParameters.endDate": date,
+        "queryParameters.take": 50,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=20)
+    except requests.RequestException as exc:
+        print(f"  Request failed: {exc}")
+        return
+    print(f"  HTTP {response.status_code}")
+    if response.status_code != 200:
+        return
+    results = response.json().get("Results", [])
+    print(f"  {len(results)} debate(s) on this date:")
+    for r in results:
+        print(f"    {r.get('DebateSection'):>20}  |  {r.get('Title')}  |  ext_id={r.get('DebateSectionExtId')}")
+
+
 def find_column_for_division(debate_section_ext_id, division_title, division_aye_count):
     print()
     print("=" * 70)
@@ -109,6 +137,8 @@ def main():
     args = parser.parse_args()
 
     debate = find_debate(args.date, args.title)
+    if not debate:
+        list_debates_on_date(args.date)
     if debate and isinstance(debate, dict):
         ext_id = debate.get("ExternalId") or debate.get("Id")
         volume = debate.get("VolumeNo") or debate.get("Overview", {}).get("VolumeNo")
