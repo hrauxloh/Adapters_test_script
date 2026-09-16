@@ -268,8 +268,16 @@ def main():
         # Written even when empty — that's what marks this month as
         # "checked, found nothing" rather than "not done yet" for the
         # resume check above.
-        pd.DataFrame(division_rows).to_csv(divisions_file, index=False)
-        pd.DataFrame(vote_rows).to_csv(votes_file, index=False)
+        # pd.DataFrame([]) has NO columns at all (not even a header row),
+        # which makes the resulting CSV unreadable by pd.read_csv later
+        # ("EmptyDataError: No columns to parse from file") — an explicit
+        # columns= keeps a real header on months with zero divisions, so
+        # they're still readable, just empty.
+        vote_columns = ["DivisionId", "Role"] + MEMBER_FIELDS
+        division_df = pd.DataFrame(division_rows) if division_rows else pd.DataFrame(columns=DIVISION_FIELDS)
+        votes_df = pd.DataFrame(vote_rows) if vote_rows else pd.DataFrame(columns=vote_columns)
+        division_df.to_csv(divisions_file, index=False)
+        votes_df.to_csv(votes_file, index=False)
         print(f"Saved {len(division_rows)} division(s) to {divisions_file}")
         print(f"Saved {len(vote_rows)} individual vote row(s) to {votes_file}")
 
