@@ -1,0 +1,95 @@
+"""
+WHAT THIS SCRIPT DOES
+----------------------
+Checks what Public Whip (publicwhip.org.uk) actually offers for downloading
+structured voting/rebellion data, before building anything that depends on
+a guessed file format.
+
+Web search turned up real, named resources, but not confirmed full URLs:
+  - Vote-matrix .txt files (tab-separated: every MP's vote per division) —
+    one confirmed real URL for the Lords (votematrix-lords.txt); the
+    Commons equivalent's exact name isn't confirmed.
+  - XML feeds: alldivisions.xml, interestingdivisions.xml (>10 rebellions),
+    mp-info.xml (per-MP attendance/rebelliousness, live).
+  - A reprocessed mirror via mySociety's publicwhip-data package, with
+    tables pw_division, pw_vote, pw_mp, etc.
+
+This tries several plausible URLs for each and reports what actually
+responds, rather than committing to one guessed path. Every attempt to
+fetch these directly from the sandbox this was written in was blocked by
+its network policy, so nothing below has been verified yet.
+
+Menu of what happens when you run this file, in order:
+  1. Try several candidate URLs for the Commons vote-matrix file.
+  2. Try several candidate URLs for each of the three XML feeds.
+  3. For anything that responds with HTTP 200, print its size and first
+     few hundred characters so the real format is visible.
+
+Usage:
+    python explore_publicwhip.py
+"""
+
+import requests
+
+VOTE_MATRIX_CANDIDATES = [
+    "https://www.publicwhip.org.uk/data/votematrix.txt",
+    "https://www.publicwhip.org.uk/data/votematrix-commons.txt",
+    "https://www.publicwhip.org.uk/data/votematrix-2024.txt",
+    "https://www.publicwhip.org.uk/data/votematrix-lords.txt",  # confirmed real (Lords)
+]
+
+XML_FEED_CANDIDATES = {
+    "alldivisions.xml": [
+        "https://www.publicwhip.org.uk/xml/alldivisions.xml",
+        "https://www.publicwhip.org.uk/data/alldivisions.xml",
+    ],
+    "interestingdivisions.xml": [
+        "https://www.publicwhip.org.uk/xml/interestingdivisions.xml",
+        "https://www.publicwhip.org.uk/data/interestingdivisions.xml",
+    ],
+    "mp-info.xml": [
+        "https://www.publicwhip.org.uk/xml/mp-info.xml",
+        "https://www.publicwhip.org.uk/data/mp-info.xml",
+    ],
+}
+
+
+def try_url(url):
+    print(f"  Trying {url}")
+    try:
+        response = requests.get(url, timeout=20)
+    except requests.RequestException as exc:
+        print(f"    Request failed: {exc}")
+        return False
+    print(f"    HTTP {response.status_code}, {len(response.content):,} bytes")
+    if response.status_code == 200:
+        print(f"    First 300 chars: {response.text[:300]!r}")
+        return True
+    return False
+
+
+def main():
+    print("=" * 70)
+    print("Vote-matrix candidates")
+    print("=" * 70)
+    for url in VOTE_MATRIX_CANDIDATES:
+        try_url(url)
+
+    for name, candidates in XML_FEED_CANDIDATES.items():
+        print()
+        print("=" * 70)
+        print(f"{name} candidates")
+        print("=" * 70)
+        for url in candidates:
+            try_url(url)
+
+    print()
+    print("=" * 70)
+    print("Report back which URLs (if any) returned HTTP 200 and what their")
+    print("content actually looks like — that decides which format to build")
+    print("a real parser/collector around.")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
