@@ -54,18 +54,33 @@ XML_FEED_CANDIDATES = {
 }
 
 
-def try_url(url):
+def try_url(url, preview_chars=300):
     print(f"  Trying {url}")
     try:
         response = requests.get(url, timeout=20)
     except requests.RequestException as exc:
         print(f"    Request failed: {exc}")
-        return False
+        return None
     print(f"    HTTP {response.status_code}, {len(response.content):,} bytes")
     if response.status_code == 200:
-        print(f"    First 300 chars: {response.text[:300]!r}")
-        return True
-    return False
+        print(f"    First {preview_chars} chars: {response.text[:preview_chars]!r}")
+        return response.text
+    return None
+
+
+def check_year_coverage(start_year=2015, end_year=2026):
+    print()
+    print("=" * 70)
+    print(f"Checking which years {start_year}-{end_year} have a real votematrix file")
+    print("=" * 70)
+    for year in range(start_year, end_year + 1):
+        url = f"https://www.publicwhip.org.uk/data/votematrix-{year}.txt"
+        try:
+            response = requests.get(url, timeout=20)
+        except requests.RequestException as exc:
+            print(f"  {year}: request failed ({exc})")
+            continue
+        print(f"  {year}: HTTP {response.status_code}, {len(response.content):,} bytes")
 
 
 def main():
@@ -74,6 +89,22 @@ def main():
     print("=" * 70)
     for url in VOTE_MATRIX_CANDIDATES:
         try_url(url)
+
+    # 2024 worked — look at a lot more of it to understand the real layout
+    # (header block, column names, and the first few actual data rows).
+    print()
+    print("=" * 70)
+    print("Full structure of votematrix-2024.txt")
+    print("=" * 70)
+    text = try_url("https://www.publicwhip.org.uk/data/votematrix-2024.txt", preview_chars=3000)
+    if text:
+        lines = text.splitlines()
+        print(f"\n  Total lines: {len(lines)}")
+        print("  Line-by-line, first 15:")
+        for i, line in enumerate(lines[:15]):
+            print(f"    [{i}] {line[:200]}")
+
+    check_year_coverage()
 
     for name, candidates in XML_FEED_CANDIDATES.items():
         print()
