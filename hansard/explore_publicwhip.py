@@ -99,10 +99,26 @@ def main():
     text = try_url("https://www.publicwhip.org.uk/data/votematrix-2024.txt", preview_chars=3000)
     if text:
         lines = text.splitlines()
-        print(f"\n  Total lines: {len(lines)}")
+        print(f"\n  Total lines: {len(lines)}, total characters: {len(text):,}")
         print("  Line-by-line, first 15:")
         for i, line in enumerate(lines[:15]):
             print(f"    [{i}] {line[:200]}")
+
+        # The MP-name lookup table (650 rows) plus header only accounts for
+        # a small fraction of this file's 47KB — the real vote matrix must
+        # be further in. Find where the MP list header row actually is,
+        # and print everything from there through a good chunk after it.
+        mp_header_idx = next((i for i, l in enumerate(lines) if l.startswith("mpid\t")), None)
+        print(f"\n  'mpid\\t...' header row found at line index: {mp_header_idx}")
+        print(f"\n  Last 20 lines of the file (tail):")
+        for i, line in enumerate(lines[-20:], start=len(lines) - 20):
+            print(f"    [{i}] {line[:200]}")
+
+        if mp_header_idx is not None:
+            after_mp_list = mp_header_idx + 1 + 650  # skip the 650 MP rows
+            print(f"\n  20 lines right after where the MP list should end (index {after_mp_list}):")
+            for i, line in enumerate(lines[after_mp_list:after_mp_list + 20], start=after_mp_list):
+                print(f"    [{i}] {line[:200]}")
 
     check_year_coverage()
 
