@@ -21,15 +21,26 @@ SST2_ADAPTER = "AdapterHub/bert-base-uncased-pf-sst2"
 EMOTION_ADAPTER = "AdapterHub/bert-base-uncased-pf-emotion"
 SST2_NAME = "sst2"
 EMOTION_NAME = "emotion"
+GROUP_NAME = "group"
 HEAD_NAME = "polarization"
 FUSION_SETUP = Fuse(SST2_NAME, EMOTION_NAME)
 FUSION_KEY = ",".join(FUSION_SETUP)
 
 
-def load_trained_model(output_dir):
+def load_trained_model(output_dir, group_adapter_dir=None):
+    """Load a trained fusion model.
+
+    group_adapter_dir: path to a standalone adapter saved by
+    train_group_adapter.py (e.g. "output_group/group"). Only needed for a
+    fusion trained with the group adapter included (sst2+emotion+group) —
+    the fusion's own saved config determines which adapters it needs, and
+    loading it fails if one of them isn't loaded first.
+    """
     model = AutoAdapterModel.from_pretrained(MODEL_NAME)
     model.load_adapter(SST2_ADAPTER, load_as=SST2_NAME, with_head=False)
     model.load_adapter(EMOTION_ADAPTER, load_as=EMOTION_NAME, with_head=False)
+    if group_adapter_dir:
+        model.load_adapter(group_adapter_dir, load_as=GROUP_NAME, with_head=False)
     model.load_adapter_fusion(f"{output_dir}/fusion", set_active=True)
     model.load_head(f"{output_dir}/head")
     model.active_head = HEAD_NAME

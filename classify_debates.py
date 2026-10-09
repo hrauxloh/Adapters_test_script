@@ -18,6 +18,8 @@ Menu of what happens when you run this file, in order:
 
 Usage:
     python classify_debates.py --input chunked_debates.csv --output-dir output
+    # if --output-dir's fusion was trained with the group adapter included:
+    python classify_debates.py --input chunked_debates.csv --output-dir output_full --group-adapter-dir output_group/group
 """
 
 import argparse
@@ -35,6 +37,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, help="CSV from hansard/chunk_debate_text.py")
     parser.add_argument("--output-dir", default="output", help="Trained model dir (fusion/, head/, calibration.json)")
+    parser.add_argument(
+        "--group-adapter-dir",
+        default=None,
+        help="Path to a standalone adapter saved by train_group_adapter.py (e.g. output_group/group). "
+        "Only needed if --output-dir's fusion was trained with the group adapter included.",
+    )
     parser.add_argument("--output", default="debate_predictions.csv")
     parser.add_argument("--debate-output", default=None, help="Defaults to <output> with _by_debate suffix")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -52,7 +60,7 @@ def main():
     print(f"Loaded {len(df)} chunk(s) from {args.input}.")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = load_trained_model(args.output_dir)
+    model = load_trained_model(args.output_dir, group_adapter_dir=args.group_adapter_dir)
 
     logits = get_logits(model, tokenizer, texts, args.batch_size, args.max_length)
     calibrated_probs = torch.softmax(logits / temperature, dim=-1).numpy()[:, 1]
