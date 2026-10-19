@@ -101,7 +101,7 @@ def cross_validated_lasso(df, outcome, features):
 
     n_splits = min(5, len(data))
     cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    lasso = LassoCV(cv=cv, random_state=42).fit(X_scaled, y)
+    lasso = LassoCV(cv=cv, random_state=42, max_iter=100_000).fit(X_scaled, y)
     cv_r2 = cross_val_score(lasso, X_scaled, y, cv=cv, scoring="r2")
 
     coefs = pd.DataFrame({"feature": features, "lasso_coef": lasso.coef_}).sort_values(
