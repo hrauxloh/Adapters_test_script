@@ -57,7 +57,7 @@ NUMERIC_AGG_COLUMNS = [
     "Party_Distance", "Gov_Cohesion", "Opp_Cohension", "All_Party_Distance",
     "TotalAye", "TotalNo",
 ]
-FIRST_AGG_COLUMNS = ["Date", "BillOrDebateName", "Government", "Party", "Opposition"]
+FIRST_AGG_COLUMNS = ["Date", "BillOrDebateName", "Government", "Party", "Opposition", "VoteType"]
 
 POSSIBLE_FREE_VOTE = "Possible Free Vote - needs verification"
 
