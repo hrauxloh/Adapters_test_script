@@ -33,6 +33,13 @@ rules are specifically about the raw markup):
     value padded mostly by markup shouldn't survive just because the raw
     count looks long enough.
 
+Manual review:
+  - the "to_remove" column (if present in --input) is "x" -- for rows
+    flagged by hand, e.g. procedural/legislative-text blocks too long or
+    structurally different to catch with the rules above. Only applied
+    if the input actually has a to_remove column, so this is a no-op on
+    a file that hasn't been manually reviewed.
+
 Prints a breakdown of how many rows each individual rule caught (rules
 can overlap on the same row -- a row counted under several rules is only
 dropped once) before saving the filtered dataset.
@@ -83,6 +90,12 @@ def build_filter_report(df, min_length):
             (value.str.len() < min_length) | (tag_stripped_length < min_length)
         ),
     }
+
+    if "to_remove" in df.columns:
+        reasons["Manually flagged (to_remove)"] = (
+            df["to_remove"].fillna("").astype(str).str.strip().str.lower().eq("x")
+        )
+
     return pd.DataFrame(reasons)
 
 
