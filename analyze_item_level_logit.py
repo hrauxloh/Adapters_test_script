@@ -193,6 +193,31 @@ def cross_validated_l1_logit(data, numeric_features, categorical_features):
     return cv_auc, kept.reset_index(drop=True), len(subset)
 
 
+def run_analysis(data, numeric_features, categorical_features, pruned_features):
+    print("\n" + "=" * 70)
+    print("Single-feature comparison (cluster-robust by DebateId)")
+    print("=" * 70)
+    comparison = compare_single_predictors(data, numeric_features + categorical_features)
+    print(comparison.to_string(index=False))
+
+    print("\n" + "=" * 70)
+    print("Readable multivariable model (cluster-robust)")
+    print("=" * 70)
+    print_pruned_multivariable_model(data, numeric_features=pruned_features)
+
+    print("\n" + "=" * 70)
+    print("Cross-validated L1 logistic regression, every feature (prediction rate)")
+    print("=" * 70)
+    cv_auc, kept, n = cross_validated_l1_logit(data, numeric_features, categorical_features)
+    print(f"n={n} items, cross-validated ROC-AUC per fold: {np.round(cv_auc, 3)}, mean={cv_auc.mean():.3f}")
+    print("(0.5 = no better than chance, 1.0 = perfect separation)")
+    if kept.empty:
+        print("No features survived L1 shrinkage.")
+    else:
+        print("Features kept (nonzero coefficient):")
+        print(kept.to_string(index=False))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--predictions", required=True, help="classify_debates.py's debate_predictions.csv (item-level)")
@@ -204,6 +229,14 @@ def main():
         "e.g. --only-features Gov_Share,Opp_Share,Party_Distance,Gov_Cohesion,Opp_Cohension. "
         "Used for all three steps below -- note some feature combinations are known to be "
         "collinear (see module docstring), which can make the readable multivariable model unstable.",
+    )
+    parser.add_argument(
+        "--thresholds",
+        default=None,
+        help="Comma-separated probability thresholds to redefine predicted_polarization at "
+        "(polarization_probability >= threshold), re-running the full analysis once per threshold "
+        "instead of using the threshold already baked into the predicted_polarization column, "
+        "e.g. --thresholds 0.3,0.4,0.46,0.5,0.6",
     )
     args = parser.parse_args()
 
@@ -217,29 +250,20 @@ def main():
     else:
         numeric_features = [c for c in NUMERIC_CANDIDATES if c in available]
     categorical_features = [c for c in CATEGORICAL_CANDIDATES if c in available]
+    pruned_features = numeric_features if args.only_features else PRUNED_NUMERIC_FEATURES
 
-    print("\n" + "=" * 70)
-    print("Single-feature comparison (cluster-robust by DebateId)")
-    print("=" * 70)
-    comparison = compare_single_predictors(data, numeric_features + categorical_features)
-    print(comparison.to_string(index=False))
+    if not args.thresholds:
+        run_analysis(data, numeric_features, categorical_features, pruned_features)
+        return
 
-    print("\n" + "=" * 70)
-    print("Readable multivariable model (cluster-robust)")
-    print("=" * 70)
-    print_pruned_multivariable_model(data, numeric_features=numeric_features if args.only_features else PRUNED_NUMERIC_FEATURES)
-
-    print("\n" + "=" * 70)
-    print("Cross-validated L1 logistic regression, every feature (prediction rate)")
-    print("=" * 70)
-    cv_auc, kept, n = cross_validated_l1_logit(data, numeric_features, categorical_features)
-    print(f"n={n} items, cross-validated ROC-AUC per fold: {np.round(cv_auc, 3)}, mean={cv_auc.mean():.3f}")
-    print("(0.5 = no better than chance, 1.0 = perfect separation)")
-    if kept.empty:
-        print("No features survived L1 shrinkage.")
-    else:
-        print("Features kept (nonzero coefficient):")
-        print(kept.to_string(index=False))
+    thresholds = [float(t.strip()) for t in args.thresholds.split(",")]
+    for threshold in thresholds:
+        data["predicted_polarization"] = (data["polarization_probability"] >= threshold).astype(int)
+        share_polarized = data["predicted_polarization"].mean()
+        print("\n" + "#" * 70)
+        print(f"# THRESHOLD = {threshold} -- {share_polarized:.1%} of items classified polarized")
+        print("#" * 70)
+        run_analysis(data, numeric_features, categorical_features, pruned_features)
 
 
 if __name__ == "__main__":
