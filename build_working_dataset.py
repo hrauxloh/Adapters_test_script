@@ -47,7 +47,7 @@ import re
 
 import pandas as pd
 
-CHAIR_OR_SPEAKER = re.compile(r"chair|speaker", re.IGNORECASE)
+CHAIR_OR_SPEAKER = re.compile(r"chair|speaker|chairman", re.IGNORECASE)
 ROSE_MARKER = "<em>rose</em><em>—</em>"
 BROUGHT_UP_MARKER = "<em>Brought up, and read the First time.</em>"
 BRACKETED_START = re.compile(r"^\(\s*[A-Za-z0-9]+\s*\)")
