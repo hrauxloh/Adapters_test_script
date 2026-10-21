@@ -24,9 +24,6 @@ rules are specifically about the raw markup):
     (a standard procedural marker for a new clause)
   - starts with "<" and ends with ">" once stripped (a value that's
     nothing but an HTML tag, e.g. a lone column-number <span>)
-  - starts with a bracketed list marker like "(a)", "(iii)", "(1)" once
-    stripped (a sub-paragraph label with no real content of its own
-    attached, from how these get split out of a numbered list)
   - under --min-length characters (default 100), checked BOTH on the raw
     value and on the value with HTML tags removed (tags only -- inner
     text is kept) -- dropped if EITHER version is too short, since a
@@ -39,6 +36,13 @@ Manual review:
     structurally different to catch with the rules above. Only applied
     if the input actually has a to_remove column, so this is a no-op on
     a file that hasn't been manually reviewed.
+
+Flagged, not dropped:
+  - a "starts_with_bracketed_marker" column is added to the output,
+    True where the value starts with a bracketed list marker like
+    "(a)", "(iii)", "(1)" (optionally preceded by a straight or curly
+    quote/apostrophe, e.g. '(a) or "(a)) once stripped -- these rows
+    stay in the dataset for review rather than being dropped outright.
 
 Prints a breakdown of how many rows each individual rule caught (rules
 can overlap on the same row -- a row counted under several rules is only
@@ -57,7 +61,7 @@ import pandas as pd
 CHAIR_OR_SPEAKER = re.compile(r"chair|speaker|chairman", re.IGNORECASE)
 ROSE_MARKER = "<em>rose</em><em>—</em>"
 BROUGHT_UP_MARKER = "<em>Brought up, and read the First time.</em>"
-BRACKETED_START = re.compile(r"^\(\s*[A-Za-z0-9]+\s*\)")
+BRACKETED_START = re.compile(r"^[\'\"‘’“”]?\s*\(\s*[A-Za-z0-9]+\s*\)")
 HAS_LETTER = re.compile(r"[A-Za-z]")
 TAG = re.compile(r"<[^>]+>")
 
@@ -69,6 +73,11 @@ def is_blank(series):
 def strip_tags(text):
     """Removes HTML tags only -- keeps whatever text was inside them."""
     return re.sub(r"\s+", " ", TAG.sub(" ", text)).strip()
+
+
+def compute_bracketed_flag(df):
+    value_stripped = df["Value"].fillna("").astype(str).str.strip()
+    return value_stripped.apply(lambda v: bool(BRACKETED_START.match(v)))
 
 
 def build_filter_report(df, min_length):
@@ -85,7 +94,6 @@ def build_filter_report(df, min_length):
         "Value is a 'rose—' marker": value.str.contains(re.escape(ROSE_MARKER), na=False, regex=True),
         "Value is a 'brought up' marker": value.str.contains(re.escape(BROUGHT_UP_MARKER), na=False, regex=True),
         "Value is a bare HTML tag": value_stripped.str.startswith("<") & value_stripped.str.endswith(">"),
-        "Value starts with a bracketed marker": value_stripped.apply(lambda v: bool(BRACKETED_START.match(v))),
         f"Value under {min_length} chars (raw or tag-stripped)": (
             (value.str.len() < min_length) | (tag_stripped_length < min_length)
         ),
@@ -116,6 +124,9 @@ def main():
     print(f"\nTotal row(s) dropped (any rule): {drop_mask.sum()}")
 
     kept = df.loc[~drop_mask].reset_index(drop=True)
+    kept["starts_with_bracketed_marker"] = compute_bracketed_flag(kept)
+    print(f"\nFlagged (not dropped) {kept['starts_with_bracketed_marker'].sum()} row(s) as starts_with_bracketed_marker.")
+
     kept.to_csv(args.output, index=False)
     print(f"Saved {len(kept)} row(s) to {args.output}")
 
