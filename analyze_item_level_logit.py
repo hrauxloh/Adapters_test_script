@@ -106,6 +106,11 @@ def load_item_level(predictions_path, features_path):
 
     metadata_cols = [c for c in NUMERIC_CANDIDATES + CATEGORICAL_CANDIDATES if c in features.columns]
     merged = predictions.merge(features[["DebateId"] + metadata_cols], on="DebateId", how="inner")
+
+    if "Gov_Cohesion" in merged.columns and "Opp_Cohension" in merged.columns:
+        merged["Whipped"] = (merged["Gov_Cohesion"] == 1) & (merged["Opp_Cohension"] == 1)
+        metadata_cols = metadata_cols + ["Whipped"]
+
     print(
         f"{len(merged)} item(s) across {merged['DebateId'].nunique()} debate(s) "
         f"matched to debate-level metadata (of {predictions['DebateId'].nunique()} debates in predictions)."
