@@ -141,12 +141,12 @@ def compare_single_predictors(data, candidates):
     return pd.DataFrame(rows).sort_values("pseudo_r2", ascending=False).reset_index(drop=True)
 
 
-def print_pruned_multivariable_model(data):
-    all_features = PRUNED_NUMERIC_FEATURES + CATEGORICAL_CANDIDATES
+def print_pruned_multivariable_model(data, numeric_features=PRUNED_NUMERIC_FEATURES):
+    all_features = numeric_features + CATEGORICAL_CANDIDATES
     available = [f for f in all_features if f in data.columns]
     subset = data[["predicted_polarization", "DebateId"] + available].dropna()
 
-    terms = [f for f in available if f in PRUNED_NUMERIC_FEATURES] + [
+    terms = [f for f in available if f in numeric_features] + [
         f"C({c})" for c in available if c in CATEGORICAL_CANDIDATES
     ]
     formula = "predicted_polarization ~ " + " + ".join(terms)
@@ -192,10 +192,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--predictions", required=True, help="classify_debates.py's debate_predictions.csv (item-level)")
     parser.add_argument("--features", required=True, help="build_debate_features.py's debate_features.csv (debate-level)")
+    parser.add_argument(
+        "--only-features",
+        default=None,
+        help="Comma-separated numeric feature names to use instead of the full candidate list, "
+        "e.g. --only-features Gov_Share,Opp_Share,Party_Distance,Gov_Cohesion,Opp_Cohension. "
+        "Used for all three steps below -- note some feature combinations are known to be "
+        "collinear (see module docstring), which can make the readable multivariable model unstable.",
+    )
     args = parser.parse_args()
 
     data, available = load_item_level(args.predictions, args.features)
-    numeric_features = [c for c in NUMERIC_CANDIDATES if c in available]
+    if args.only_features:
+        requested = [f.strip() for f in args.only_features.split(",")]
+        missing = [f for f in requested if f not in available]
+        if missing:
+            print(f"WARNING: requested feature(s) not found in the data, skipping: {missing}")
+        numeric_features = [f for f in requested if f in available]
+    else:
+        numeric_features = [c for c in NUMERIC_CANDIDATES if c in available]
     categorical_features = [c for c in CATEGORICAL_CANDIDATES if c in available]
 
     print("\n" + "=" * 70)
@@ -205,9 +220,9 @@ def main():
     print(comparison.to_string(index=False))
 
     print("\n" + "=" * 70)
-    print("Readable multivariable model, non-redundant subset (cluster-robust)")
+    print("Readable multivariable model (cluster-robust)")
     print("=" * 70)
-    print_pruned_multivariable_model(data)
+    print_pruned_multivariable_model(data, numeric_features=numeric_features if args.only_features else PRUNED_NUMERIC_FEATURES)
 
     print("\n" + "=" * 70)
     print("Cross-validated L1 logistic regression, every feature (prediction rate)")
