@@ -15,22 +15,25 @@ Menu of what happens when you run this file, in order:
      preserving existing paragraph breaks (blank lines) as a distinct
      "\n\n" -- only ordinary whitespace (spaces, tabs, single newlines
      within a paragraph) gets collapsed.
-  4. Drop rows where to_remove (matched regardless of case/whitespace in
-     the header) is "x".
-  5. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows).
-     NOT explicitly requested, but necessary for step 6 to do anything
+  4. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows).
+     NOT explicitly requested, but necessary for step 5 to do anything
      useful: a Timestamp sitting between two fragments of the same
      speaker's turn has no AttributedTo of its own, so it would otherwise
      break the "consecutive identical" chain and leave the fragments
      split apart -- exactly the bug fix_missing_attributions.py exists to
      fix in the first place.
-  6. Merge consecutive rows that share an identical DebateId, ItemType,
+  5. Merge consecutive rows that share an identical DebateId, ItemType,
      MemberId, and AttributedTo -- these are speaking-turn fragments.
      Their Value text is concatenated (space-joined) in OrderInSection
      order into one row; the merged row keeps the first fragment's
      OrderInSection/ItemId, and a new merged_row_ids column records every
      contributing row_hash_id (space-separated) for traceability, plus
      n_merged_rows (how many original rows went into it).
+  6. In each merged Value, truncate everything from the first occurrence
+     of "Question put" onward (that substring and everything after it is
+     dropped, keeping only what came before it) -- run after merging, so
+     it also catches a "Question put" that only shows up once fragments
+     split across a Timestamp are back together.
 
 Usage:
     python build_working_dataset_values_edited.py --input debate_predictions_fixed.csv --output working_dataset_values_edited.csv
@@ -58,11 +61,16 @@ def strip_tags(text):
     return "\n\n".join(paragraphs)
 
 
-def find_to_remove_column(df):
-    for col in df.columns:
-        if col.strip().lower() == "to_remove":
-            return col
-    return None
+def truncate_at_question_put(text):
+    """Drops "Question put" and everything after it in a value, keeping
+    only what came before -- the procedural voting announcement that
+    typically follows the end of substantive speech."""
+    if not isinstance(text, str):
+        return text
+    idx = text.find("Question put")
+    if idx == -1:
+        return text
+    return text[:idx].rstrip()
 
 
 def is_blank(series):
@@ -115,14 +123,6 @@ def main():
     df["Value"] = df["Value"].apply(strip_tags)
     print("Stripped HTML tags from Value.")
 
-    to_remove_col = find_to_remove_column(df)
-    if to_remove_col is not None:
-        drop_mask = df[to_remove_col].fillna("").astype(str).str.strip().str.lower().eq("x")
-        print(f"Found manual-review column '{to_remove_col}': dropping {drop_mask.sum()} row(s) marked x.")
-        df = df.loc[~drop_mask].reset_index(drop=True)
-    else:
-        print("No to_remove column found in --input -- skipping the manual-review step.")
-
     blank_attribution = is_blank(df["AttributedTo"])
     print(f"Dropping {blank_attribution.sum()} row(s) with blank AttributedTo (marker rows, e.g. Timestamp) before merging.")
     df = df.loc[~blank_attribution].reset_index(drop=True)
@@ -133,6 +133,10 @@ def main():
     before = len(df)
     merged = merge_consecutive_groups(df)
     print(f"Merged {before} row(s) into {len(merged)} row(s) by consecutive (DebateId, ItemType, MemberId, AttributedTo).")
+
+    has_question_put = merged["Value"].str.contains("Question put", regex=False, na=False)
+    print(f"Truncating {has_question_put.sum()} row(s) at 'Question put'.")
+    merged["Value"] = merged["Value"].apply(truncate_at_question_put)
 
     merged.to_csv(args.output, index=False)
     print(f"Saved {len(merged)} row(s) to {args.output}")
