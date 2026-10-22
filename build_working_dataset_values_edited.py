@@ -11,7 +11,10 @@ Menu of what happens when you run this file, in order:
   2. Add a row_hash_id column (a short hash of DebateId+ItemId), computed
      before any content changes, so every original row keeps a traceable
      identity even after merging below.
-  3. Strip HTML tags (markup only -- inner text is kept) from every Value.
+  3. Strip HTML tags (markup only -- inner text is kept) from every Value,
+     preserving existing paragraph breaks (blank lines) as a distinct
+     "\n\n" -- only ordinary whitespace (spaces, tabs, single newlines
+     within a paragraph) gets collapsed.
   4. Drop rows where to_remove (matched regardless of case/whitespace in
      the header) is "x".
   5. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows).
@@ -43,9 +46,16 @@ TAG = re.compile(r"<[^>]+>")
 
 
 def strip_tags(text):
+    """Removes HTML tags (markup only -- inner text is kept), preserving
+    existing paragraph breaks as a single "\n\n" while collapsing any
+    other run of whitespace (spaces, tabs, single newlines) to one space."""
     if not isinstance(text, str):
         return ""
-    return re.sub(r"\s+", " ", TAG.sub(" ", text)).strip()
+    text = TAG.sub(" ", text)
+    paragraphs = re.split(r"\n\s*\n", text)
+    paragraphs = [re.sub(r"\s+", " ", p).strip() for p in paragraphs]
+    paragraphs = [p for p in paragraphs if p]
+    return "\n\n".join(paragraphs)
 
 
 def find_to_remove_column(df):
