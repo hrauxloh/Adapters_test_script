@@ -62,6 +62,7 @@ Menu of what happens when you run this file, in order:
 
 Usage:
     python analyze_item_level_logit.py --predictions /content/drive/MyDrive/debate_predictions.csv --features /content/drive/MyDrive/debate_features.csv
+    python analyze_item_level_logit.py --predictions ... --features ... --min-items-per-debate 20,50,100
 """
 
 import argparse
@@ -193,6 +194,17 @@ def cross_validated_l1_logit(data, numeric_features, categorical_features):
     return cv_auc, kept.reset_index(drop=True), len(subset)
 
 
+def filter_by_min_items(data, min_items):
+    counts = data.groupby("DebateId").size()
+    keep_debates = counts[counts >= min_items].index
+    filtered = data[data["DebateId"].isin(keep_debates)].copy()
+    print(
+        f"min_items_per_debate={min_items}: kept {len(keep_debates)} of {data['DebateId'].nunique()} debate(s), "
+        f"{len(filtered)} of {len(data)} item(s)."
+    )
+    return filtered
+
+
 def run_analysis(data, numeric_features, categorical_features, pruned_features):
     print("\n" + "=" * 70)
     print("Single-feature comparison (cluster-robust by DebateId)")
@@ -238,6 +250,13 @@ def main():
         "instead of using the threshold already baked into the predicted_polarization column, "
         "e.g. --thresholds 0.3,0.4,0.46,0.5,0.6",
     )
+    parser.add_argument(
+        "--min-items-per-debate",
+        default=None,
+        help="Comma-separated minimum item counts -- debates with fewer items than this are dropped "
+        "before the analysis, re-running once per cutoff (outermost loop, before --thresholds), "
+        "e.g. --min-items-per-debate 20,50,100",
+    )
     args = parser.parse_args()
 
     data, available = load_item_level(args.predictions, args.features)
@@ -252,18 +271,34 @@ def main():
     categorical_features = [c for c in CATEGORICAL_CANDIDATES if c in available]
     pruned_features = numeric_features if args.only_features else PRUNED_NUMERIC_FEATURES
 
-    if not args.thresholds:
-        run_analysis(data, numeric_features, categorical_features, pruned_features)
-        return
+    min_items_values = (
+        [int(m.strip()) for m in args.min_items_per_debate.split(",")] if args.min_items_per_debate else [None]
+    )
 
-    thresholds = [float(t.strip()) for t in args.thresholds.split(",")]
-    for threshold in thresholds:
-        data["predicted_polarization"] = (data["polarization_probability"] >= threshold).astype(int)
-        share_polarized = data["predicted_polarization"].mean()
-        print("\n" + "#" * 70)
-        print(f"# THRESHOLD = {threshold} -- {share_polarized:.1%} of items classified polarized")
-        print("#" * 70)
-        run_analysis(data, numeric_features, categorical_features, pruned_features)
+    for min_items in min_items_values:
+        scoped_data = filter_by_min_items(data, min_items) if min_items is not None else data
+
+        if min_items is not None:
+            print("\n" + "%" * 70)
+            print(f"% MIN ITEMS PER DEBATE = {min_items}")
+            print("%" * 70)
+
+        if scoped_data.empty:
+            print(f"No debates have at least {min_items} items -- skipping this cutoff.")
+            continue
+
+        if not args.thresholds:
+            run_analysis(scoped_data, numeric_features, categorical_features, pruned_features)
+            continue
+
+        thresholds = [float(t.strip()) for t in args.thresholds.split(",")]
+        for threshold in thresholds:
+            scoped_data["predicted_polarization"] = (scoped_data["polarization_probability"] >= threshold).astype(int)
+            share_polarized = scoped_data["predicted_polarization"].mean()
+            print("\n" + "#" * 70)
+            print(f"# THRESHOLD = {threshold} -- {share_polarized:.1%} of items classified polarized")
+            print("#" * 70)
+            run_analysis(scoped_data, numeric_features, categorical_features, pruned_features)
 
 
 if __name__ == "__main__":
