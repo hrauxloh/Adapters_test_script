@@ -18,15 +18,17 @@ Menu of what happens when you run this file, in order:
   4. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows),
      where AttributedTo contains "chair" or "speaker" (case-insensitive --
      catches Chairman/Deputy Chair/Madam Speaker/Deputy Speaker variants
-     too), or with a blank MemberId. The blank-AttributedTo drop isn't
-     explicitly requested, but is necessary for step 5 to do anything
-     useful: a marker row sitting between two fragments of the same
-     speaker's turn has no AttributedTo of its own, so it would otherwise
-     break the "consecutive identical" chain and leave the fragments
-     split apart -- exactly the bug fix_missing_attributions.py exists to
-     fix in the first place. Same reasoning extends to the chair/speaker
-     and blank-MemberId drops here too: none of these should block two
-     fragments of a real speaker's turn from merging across them.
+     too), where AttributedTo contains "Several hon. Members" (not a
+     single identifiable speaker), or with a blank MemberId. The blank-
+     AttributedTo drop isn't explicitly requested, but is necessary for
+     step 5 to do anything useful: a marker row sitting between two
+     fragments of the same speaker's turn has no AttributedTo of its
+     own, so it would otherwise break the "consecutive identical" chain
+     and leave the fragments split apart -- exactly the bug
+     fix_missing_attributions.py exists to fix in the first place. Same
+     reasoning extends to every drop in this step: none of these should
+     block two fragments of a real speaker's turn from merging across
+     them.
   5. Merge consecutive rows that share an identical DebateId, ItemType,
      MemberId, and AttributedTo -- these are speaking-turn fragments.
      Their Value text is concatenated (space-joined) in OrderInSection
@@ -193,7 +195,10 @@ def main():
     blank_member_id = is_blank(df["MemberId"])
     print(f"Dropping {blank_member_id.sum()} row(s) with blank MemberId before merging.")
 
-    df = df.loc[~(blank_attribution | chair_or_speaker | blank_member_id)].reset_index(drop=True)
+    several_members = df["AttributedTo"].fillna("").astype(str).str.contains("Several hon. Members", case=False, na=False)
+    print(f"Dropping {several_members.sum()} row(s) where AttributedTo is 'Several hon. Members rose—' before merging.")
+
+    df = df.loc[~(blank_attribution | chair_or_speaker | blank_member_id | several_members)].reset_index(drop=True)
 
     df["OrderInSection"] = pd.to_numeric(df["OrderInSection"], errors="coerce")
     df = df.sort_values(["DebateId", "OrderInSection"], kind="stable").reset_index(drop=True)
