@@ -15,18 +15,18 @@ Menu of what happens when you run this file, in order:
      preserving existing paragraph breaks (blank lines) as a distinct
      "\n\n" -- only ordinary whitespace (spaces, tabs, single newlines
      within a paragraph) gets collapsed.
-  4. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows), or
+  4. Drop rows with a blank AttributedTo (e.g. Timestamp marker rows),
      where AttributedTo contains "chair" or "speaker" (case-insensitive --
      catches Chairman/Deputy Chair/Madam Speaker/Deputy Speaker variants
-     too). The blank-AttributedTo drop isn't explicitly requested, but is
-     necessary for step 5 to do anything useful: a marker row sitting
-     between two fragments of the same speaker's turn has no AttributedTo
-     of its own, so it would otherwise break the "consecutive identical"
-     chain and leave the fragments split apart -- exactly the bug
-     fix_missing_attributions.py exists to fix in the first place. Same
-     reasoning extends the chair/speaker drop here too: a Chair/Speaker
-     interjection mid-exchange shouldn't block two fragments of a real
-     speaker's turn from merging across it.
+     too), or with a blank MemberId. The blank-AttributedTo drop isn't
+     explicitly requested, but is necessary for step 5 to do anything
+     useful: a marker row sitting between two fragments of the same
+     speaker's turn has no AttributedTo of its own, so it would otherwise
+     break the "consecutive identical" chain and leave the fragments
+     split apart -- exactly the bug fix_missing_attributions.py exists to
+     fix in the first place. Same reasoning extends to the chair/speaker
+     and blank-MemberId drops here too: none of these should block two
+     fragments of a real speaker's turn from merging across them.
   5. Merge consecutive rows that share an identical DebateId, ItemType,
      MemberId, and AttributedTo -- these are speaking-turn fragments.
      Their Value text is concatenated (space-joined) in OrderInSection
@@ -190,7 +190,10 @@ def main():
     chair_or_speaker = df["AttributedTo"].fillna("").astype(str).str.contains(CHAIR_OR_SPEAKER, na=False)
     print(f"Dropping {chair_or_speaker.sum()} row(s) where AttributedTo contains chair/speaker before merging.")
 
-    df = df.loc[~(blank_attribution | chair_or_speaker)].reset_index(drop=True)
+    blank_member_id = is_blank(df["MemberId"])
+    print(f"Dropping {blank_member_id.sum()} row(s) with blank MemberId before merging.")
+
+    df = df.loc[~(blank_attribution | chair_or_speaker | blank_member_id)].reset_index(drop=True)
 
     df["OrderInSection"] = pd.to_numeric(df["OrderInSection"], errors="coerce")
     df = df.sort_values(["DebateId", "OrderInSection"], kind="stable").reset_index(drop=True)
