@@ -39,6 +39,12 @@ Menu of what happens when you run this file, in order:
      dropped, keeping only what came before it) -- run after merging, so
      it also catches a "Question put" that only shows up once fragments
      split across a Timestamp are back together.
+  7. Drop rows whose entire Value (after the truncation above, stripped
+     of surrounding whitespace) is EXACTLY one of a fixed list of stock
+     "will X give way?"/"rose"/"indicated assent" interjection phrases --
+     not a substring match, so real speech that happens to mention
+     giving way isn't touched, only a row whose whole content is nothing
+     but one of these stock lines.
 
 Usage:
     python build_working_dataset_values_edited.py --input debate_predictions_fixed.csv --output working_dataset_values_edited.csv
@@ -52,6 +58,52 @@ import pandas as pd
 
 TAG = re.compile(r"<[^>]+>")
 CHAIR_OR_SPEAKER = re.compile(r"chair|speaker", re.IGNORECASE)
+
+# Stock "will X give way?" / assent-dissent interjections -- a row is
+# dropped only when its ENTIRE value matches one of these exactly, not
+# when one just appears inside otherwise-substantive speech.
+GIVE_WAY_PHRASES = {
+    "Will the right hon. Member give way?",
+    "On that point, will the Minister give way?",
+    "Will the Minister give way? I did give way to him.",
+    "On that point, will my hon. Friend give way?",
+    "Wil my right hon. Friend give way?",
+    "Will the Leader of the Opposition give way?",
+    "Can I not tempt my hon. Friend to give way?",
+    "On the issue of potholes, will the Minister give way?",
+    "Will the Leader of the House give way?",
+    "On that point, will the Prime Minister give way?",
+    "Is my hon. Friend asking me to give way?",
+    "Will the Home Secretary give way?",
+    "Will the Chancellor give way?",
+    "Will my hon. Friend give way? [ Interruption. ]",
+    "Will the Attorney General give way?",
+    "Will the Prime Minister give way?",
+    "Can I beseech the right hon. Gentleman to give way?",
+    "Well, would my hon. Friend give way? [ Laughter. ]",
+    "Will the hon. and learned Gentleman give way?",
+    "Will my hon. and learned Friend give way?",
+    "Will the Solicitor General give way?",
+    "On that point, will the hon. Lady give way?",
+    "Will the hon. Gentleman give way?",
+    "Will my right hon. Friend give way?",
+    "Will the hon. Lady give way?",
+    "Will the right hon. Gentleman give way?",
+    "Will the hon. Lady give way? I want to be helpful.",
+    "Will the right hon. Lady give way?",
+    "Will the right hon. and learned Gentleman give way?",
+    "Will my right hon. and learned Friend give way?",
+    "Will the Secretary of State give way?",
+    "Will the Lord Chancellor give way?",
+    "Will the hon. Member give way?",
+    "On that point, will the hon. Gentleman give way?",
+    "Will the hon. and learned Lady give way? indicated assent.",
+    "indicated dissent.",
+    "rose —",
+    "rose—",
+    "Will the Minister give way?",
+    "Will my hon. Friend give way?",
+}
 
 
 def strip_tags(text):
@@ -147,6 +199,10 @@ def main():
     has_question_put = merged["Value"].str.contains("Question put", regex=False, na=False)
     print(f"Truncating {has_question_put.sum()} row(s) at 'Question put'.")
     merged["Value"] = merged["Value"].apply(truncate_at_question_put)
+
+    give_way_only = merged["Value"].fillna("").astype(str).str.strip().isin(GIVE_WAY_PHRASES)
+    print(f"Dropping {give_way_only.sum()} row(s) whose entire value is a stock give-way/interjection phrase.")
+    merged = merged.loc[~give_way_only].reset_index(drop=True)
 
     merged.to_csv(args.output, index=False)
     print(f"Saved {len(merged)} row(s) to {args.output}")
