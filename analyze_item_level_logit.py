@@ -147,13 +147,14 @@ def compare_single_predictors(data, candidates):
     return pd.DataFrame(rows).sort_values("pseudo_r2", ascending=False).reset_index(drop=True)
 
 
-def print_pruned_multivariable_model(data, numeric_features=PRUNED_NUMERIC_FEATURES):
-    all_features = numeric_features + CATEGORICAL_CANDIDATES
+def print_pruned_multivariable_model(data, numeric_features=PRUNED_NUMERIC_FEATURES, categorical_features=None):
+    categorical_features = categorical_features if categorical_features is not None else CATEGORICAL_CANDIDATES
+    all_features = numeric_features + categorical_features
     available = [f for f in all_features if f in data.columns]
     subset = data[["predicted_polarization", "DebateId"] + available].dropna()
 
     terms = [f for f in available if f in numeric_features] + [
-        f"C({c})" for c in available if c in CATEGORICAL_CANDIDATES
+        f"C({c})" for c in available if c in categorical_features
     ]
     formula = "predicted_polarization ~ " + " + ".join(terms)
     print(f"Formula: {formula}")
@@ -215,7 +216,7 @@ def run_analysis(data, numeric_features, categorical_features, pruned_features):
     print("\n" + "=" * 70)
     print("Readable multivariable model (cluster-robust)")
     print("=" * 70)
-    print_pruned_multivariable_model(data, numeric_features=pruned_features)
+    print_pruned_multivariable_model(data, numeric_features=pruned_features, categorical_features=categorical_features)
 
     print("\n" + "=" * 70)
     print("Cross-validated L1 logistic regression, every feature (prediction rate)")
@@ -237,8 +238,10 @@ def main():
     parser.add_argument(
         "--only-features",
         default=None,
-        help="Comma-separated numeric feature names to use instead of the full candidate list, "
-        "e.g. --only-features Gov_Share,Opp_Share,Party_Distance,Gov_Cohesion,Opp_Cohension. "
+        help="Comma-separated feature names (numeric or categorical, e.g. VoteType/Whipped) to use "
+        "instead of the full candidate list, e.g. --only-features Gov_Share,Opp_Share,Party_Distance. "
+        "A categorical candidate (currently just VoteType) is only included if named here -- it is "
+        "NOT added automatically the way it is when --only-features is omitted. "
         "Used for all three steps below -- note some feature combinations are known to be "
         "collinear (see module docstring), which can make the readable multivariable model unstable.",
     )
@@ -265,10 +268,11 @@ def main():
         missing = [f for f in requested if f not in available]
         if missing:
             print(f"WARNING: requested feature(s) not found in the data, skipping: {missing}")
-        numeric_features = [f for f in requested if f in available]
+        numeric_features = [f for f in requested if f in available and f not in CATEGORICAL_CANDIDATES]
+        categorical_features = [f for f in requested if f in available and f in CATEGORICAL_CANDIDATES]
     else:
         numeric_features = [c for c in NUMERIC_CANDIDATES if c in available]
-    categorical_features = [c for c in CATEGORICAL_CANDIDATES if c in available]
+        categorical_features = [c for c in CATEGORICAL_CANDIDATES if c in available]
     pruned_features = numeric_features if args.only_features else PRUNED_NUMERIC_FEATURES
 
     min_items_values = (
