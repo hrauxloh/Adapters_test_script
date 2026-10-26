@@ -74,10 +74,27 @@ def append_result(results_file, row):
     pd.DataFrame([row]).to_csv(results_file, mode="a", header=header_needed, index=False)
 
 
+def check_results_dir(results_file):
+    """Fails fast, before any training, if --results-file's directory
+    doesn't exist -- otherwise a full training run can complete and only
+    then crash trying to save its result (e.g. a Google Drive path when
+    Drive isn't actually mounted in this runtime), losing that run."""
+    results_dir = os.path.dirname(os.path.abspath(results_file))
+    if not os.path.isdir(results_dir):
+        raise SystemExit(
+            f"\n--results-file's directory does not exist: {results_dir}\n"
+            "If this is a Google Drive path, Drive isn't mounted in this runtime -- run\n"
+            "    from google.colab import drive; drive.mount('/content/drive')\n"
+            "first, then re-run this exact command. Failing now, before any training, "
+            "so a GPU run isn't wasted on a result that can't be saved."
+        )
+
+
 def main():
     parser = build_arg_parser()
     parser.add_argument("--results-file", default="grid_search_results.csv", help="Appended to after every trial -- re-running the same command resumes from here instead of starting over.")
     args = parser.parse_args()
+    check_results_dir(args.results_file)
 
     all_combinations = list(itertools.product(LEARNING_RATES, LOSS_AUX_WEIGHTS))
     completed = load_completed(args.results_file)
