@@ -73,17 +73,26 @@ class UsVsThemDataset(torch.utils.data.Dataset):
 
 
 class MultiTaskRoberta(nn.Module):
-    """Frozen-nothing RoBERTa (all weights train) with two small heads on
-    the [CLS] token: one number (the us-vs-them score) and 13 numbers (one
-    per emotion, each treated as an independent yes/no)."""
+    """RoBERTa (all weights train by default, or the top --freeze-layers-
+    from-the-bottom left frozen) with two small heads on the [CLS] token:
+    one number (the us-vs-them score) and 13 numbers (one per emotion,
+    each treated as an independent yes/no).
 
-    def __init__(self, model_name, num_emotions, dropout=0.1):
+    Note: this reads last_hidden_state[:, 0] directly, NOT
+    outputs.pooler_output -- the pooler's randomly-initialized weights
+    (see the "MISSING" load-report lines at startup) are loaded but never
+    actually used here. The freshly-random parameters each run are
+    score_head/emotion_head below, not the pooler."""
+
+    def __init__(self, model_name, num_emotions, dropout=0.1, freeze_layers=0):
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
         self.dropout = nn.Dropout(dropout)
         self.score_head = nn.Linear(hidden_size, 1)
         self.emotion_head = nn.Linear(hidden_size, num_emotions)
+        if freeze_layers > 0:
+            freeze_lower_layers(self.encoder, freeze_layers)
 
     def forward(self, input_ids=None, attention_mask=None):
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
@@ -92,6 +101,23 @@ class MultiTaskRoberta(nn.Module):
             "score": self.score_head(cls_repr).squeeze(-1),
             "emotions": self.emotion_head(cls_repr),
         }
+
+
+def freeze_lower_layers(encoder, num_layers):
+    """Freezes the embeddings and the bottom `num_layers` transformer
+    layers (out of roberta-base's 12), leaving only the top layers + the
+    two heads to actually train. Standard small-data fine-tuning move:
+    fewer trainable parameters generally means less run-to-run variance
+    from the heads' random initialization and less overfitting risk on a
+    ~3.7k-row training set."""
+    for param in encoder.embeddings.parameters():
+        param.requires_grad = False
+    total_layers = len(encoder.encoder.layer)
+    if num_layers > total_layers:
+        raise ValueError(f"--freeze-layers {num_layers} exceeds the model's {total_layers} layers.")
+    for layer in encoder.encoder.layer[:num_layers]:
+        for param in layer.parameters():
+            param.requires_grad = False
 
 
 class MultiTaskTrainer(Trainer):
@@ -154,6 +180,9 @@ def build_arg_parser():
     parser.add_argument("--lr", type=float, default=2e-5, help="Full fine-tuning needs a smaller LR than adapter training -- 1e-5 to 3e-5 is the typical RoBERTa range, vs. 5e-5 for the frozen-base adapters elsewhere in this repo.")
     parser.add_argument("--loss-aux-weight", type=float, default=0.0, help="Weight of the auxiliary emotion loss added to the primary regression loss. 0 = single-task (ablation).")
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--freeze-layers", type=int, default=0, help="Freeze the embeddings + bottom N of roberta-base's 12 transformer layers (0 = fully trainable, matching the paper's own full fine-tuning setup).")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay (L2 regularization). 0 = off (matches earlier runs); ~0.01 is a common transformer fine-tuning default.")
+    parser.add_argument("--warmup-ratio", type=float, default=0.0, help="Fraction of total training steps spent linearly warming up the learning rate from 0. 0 = off (matches earlier runs); ~0.06 is a common default and can smooth out early-training grad-norm spikes.")
     parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -178,7 +207,21 @@ def train_and_evaluate(args):
     train_dataset = UsVsThemDataset(train_df, tokenizer, args.max_length)
     val_dataset = UsVsThemDataset(val_df, tokenizer, args.max_length)
 
-    model = MultiTaskRoberta(MODEL_NAME, num_emotions=len(EMOTION_COLUMNS), dropout=args.dropout)
+    model = MultiTaskRoberta(
+        MODEL_NAME, num_emotions=len(EMOTION_COLUMNS), dropout=args.dropout, freeze_layers=args.freeze_layers
+    )
+    if args.freeze_layers > 0:
+        n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in model.parameters())
+        print(f"Froze embeddings + bottom {args.freeze_layers} layer(s): {n_trainable:,}/{n_total:,} parameters still trainable.")
+
+    # The installed transformers version dropped TrainingArguments'
+    # warmup_ratio convenience field (only the absolute warmup_steps
+    # remains), so --warmup-ratio is converted to a step count by hand,
+    # using the same steps-per-epoch math Trainer itself uses internally.
+    steps_per_epoch = -(-len(train_dataset) // args.batch_size)  # ceiling division
+    total_steps = steps_per_epoch * args.epochs
+    warmup_steps = round(args.warmup_ratio * total_steps)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -186,6 +229,8 @@ def train_and_evaluate(args):
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        warmup_steps=warmup_steps,
         eval_strategy="epoch",
         # Checkpointing + load_best_model_at_end stay on even for throwaway
         # grid-search trials (save_artifacts=False) -- they're what
