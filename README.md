@@ -406,3 +406,131 @@ python summarize_ablation_results.py --drive-root /content/drive/MyDrive
 The confound control (fusing three adapters trained on unrelated tasks)
 still needs sourcing suitable adapters first — it isn't part of either
 script above.
+
+## Standalone comparison: a full-fine-tune RoBERTa "us vs. them" model
+
+`train_group_adapter.py` already trains a frozen-base adapter for us-vs-them
+framing, for use inside the fusion pipeline above. Separately, this repo
+also has a **full RoBERTa fine-tune** of the same underlying task, following
+Huguet Cabot et al. 2021 ("Us vs. Them: A Dataset of Populist Attitudes,
+News Bias and Emotions", EACL 2021) more directly — their own code
+(github.com/LittlePea13/UsVsThem) has no published checkpoint, pins PyTorch
+Lightning 0.8.3/transformers 3.0.0/apex/horovod, and has at least one
+outright broken import, so this is a modernized rebuild of their idea
+(full fine-tuning, trained jointly on the us-vs-them score and an auxiliary
+emotion-prediction task) against the current Hugging Face `Trainer`, not a
+port of their code.
+
+**This is intentionally a separate, standalone signal, not part of the
+adapter-fusion pipeline above.** It doesn't attach to `train_fusion.py`,
+and its predictions are never merged into `debate_predictions*.csv` — see
+[Running it alongside the polarization pipeline](#running-it-alongside-the-polarization-pipeline)
+below for how the two outputs stay side by side for comparison instead.
+
+### Training data
+
+Uses `UsVsThem_{train,valid,test}_public.csv` (on this repo's `main`
+branch), not the plain `UsVsThem_{train,valid,test}.csv` files
+`train_group_adapter.py` uses — the `_public` files carry the same `text`
+(as `body`) and `usVSthem_scale`, plus 13 emotion flags (`Anger`,
+`Contempt`, `Disgust`, `Fear`, `Gratitude`, `Guilt`, `Happiness`, `Hope`,
+`Pride`, `Relief`, `Sadness`, `Sympathy`, `Emotions_Neutral`) that the plain
+files don't, needed for the auxiliary emotion task.
+
+### Architecture
+
+`train_usvsthem_classifier.py` fine-tunes all of `roberta-base`'s weights
+(optionally minus `--freeze-layers` from the bottom), with two small heads
+on the `[CLS]` token: a regression head for `usVSthem_scale` (0..1), and a
+13-way multi-label head for the emotion flags. Total loss = regression MSE
++ `--loss-aux-weight` x emotion BCE; `--loss-aux-weight 0` trains on the
+us-vs-them score alone. Exposes `build_arg_parser()`/`train_and_evaluate()`
+the same way `train_fusion.py` does, plus `load_usvsthem_model()` for
+`classify_usvsthem.py` to reload a trained run.
+
+```bash
+python train_usvsthem_classifier.py --train-file UsVsThem_train_public.csv --val-file UsVsThem_valid_public.csv
+```
+
+### How the final settings were chosen
+
+Getting from "does this even run" to "which settings should I trust" took
+three separate rounds of testing, because the first round's answer turned
+out not to hold up:
+
+1. **Grid search** (`grid_search_usvsthem.py`): a full Cartesian sweep of
+   3 learning rates x 2 `--loss-aux-weight` values (6 trials), each judged
+   once against the validation split, never the test set. The winner was
+   `lr=2e-5, loss_aux_weight=0.5` (validation MAE 0.172).
+2. **That winner didn't reproduce.** Retraining the exact same settings
+   for the final test-set check scored MAE 0.195-0.204 on a same-settings
+   rerun — a swing too large to explain as "the model got a bit worse."
+   Full fine-tuning on this project's ~3,700-row training set is
+   genuinely unstable run to run (GPU-level non-determinism plus
+   `score_head`/`emotion_head`'s fresh random initialization each run —
+   *not* the RoBERTa pooler, which is loaded but never actually used by
+   this architecture), so a single run per setting isn't trustworthy
+   evidence that one setting beats another.
+3. **Multi-seed stability check** (`multi_seed_usvsthem.py`): reran 4
+   configs x 3 seeds each — `baseline` (the grid search's winner as-is),
+   `frozen` (`--freeze-layers 6`), `regularized` (`--weight-decay 0.01
+   --warmup-ratio 0.06`), and `combined` (both) — and compared each
+   config's mean MAE against its own seed-to-seed spread, not just its
+   mean. None of the three alternatives beat `baseline` by more than
+   their own noise. `regularized` looked notably *more stable* on just 3
+   seeds (std 0.0009, a third of the others') — digging into that
+   specifically with 5 more seeds (8 total) showed the tight std didn't
+   hold up either (it widened to 0.0021, back in the same range as
+   everything else, and its mean MAE became the *worst* of the four).
+   That reversal is itself the finding: a 3-seed variance estimate isn't
+   reliable any more than a 1-seed point estimate is, and this project
+   nearly drew the wrong conclusion from one.
+
+**Conclusion: plain `baseline` (`lr=2e-5, loss_aux_weight=0.5`, no
+freezing/decay/warmup) it is** — not because it's provably better than the
+alternatives, but because none of them are provably better than it either,
+and it's the simplest option with no extra knobs to justify.
+
+### Final, honest performance
+
+Three seeded final runs (42, 1, 7) of `baseline`, each with
+`--evaluate-test`:
+
+| | mean | std (across 3 seeds) |
+|---|---|---|
+| Validation MAE | 0.1770 | 0.0004 |
+| Validation correlation | 0.516 | 0.013 |
+| **Test MAE** | **0.1837** | **0.0009** |
+| Test correlation | 0.510 | 0.011 |
+
+Naive baseline (always predicting the training-set mean): MAE 0.221 — the
+model clearly and consistently beats it across all three seeds. Correlation
+~0.51 means it tracks the right general direction but isn't precise;
+report the numbers above with their spread, not as single fixed values.
+The saved model for seed 42 (test MAE 0.1833, closest of the three to the
+mean) is the one kept rather than whichever seed happened to score best.
+
+```bash
+python train_usvsthem_classifier.py --train-file UsVsThem_train_public.csv --val-file UsVsThem_valid_public.csv \
+  --test-file UsVsThem_test_public.csv --lr 2e-5 --loss-aux-weight 0.5 --seed 42 \
+  --evaluate-test --save-artifacts --output-dir <drive-path>/usvsthem_final_seed42
+```
+
+### Running it alongside the polarization pipeline
+
+`classify_usvsthem.py` applies a trained run (`--model-dir <output-dir>/final`)
+to the same item-level text `classify_debates.py`/`classify_edited_dataset.py`
+classify — `working_dataset_values_edited.csv` by default, or any CSV with a
+`Value` column (`--text-column` to point at a different one, e.g. `body`
+for the `UsVsThem_*_public.csv` files themselves). It writes its own
+`usvsthem_score` (0..1) plus a probability per emotion, to its own
+`--output` file (default `debate_usvsthem_scores.csv`) and its own
+by-debate rollup — **it never reads or writes `debate_predictions*.csv`**,
+so the polarization pipeline's output is untouched and the two can be
+joined later (on `DebateId`/`ItemId`) for comparison, same incremental
+save-every/resume behavior as the other classify scripts:
+
+```bash
+python classify_usvsthem.py --input working_dataset_values_edited.csv \
+  --model-dir <drive-path>/usvsthem_final_seed42/final
+```
