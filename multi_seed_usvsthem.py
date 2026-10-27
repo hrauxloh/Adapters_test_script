@@ -102,17 +102,29 @@ def check_results_dir(results_file):
 def main():
     parser = build_arg_parser()
     parser.add_argument("--results-file", default="multi_seed_results.csv", help="Appended to after every (config, seed) run -- re-running the same command resumes from here instead of starting over.")
+    parser.add_argument("--configs", default=None, help=f"Comma-separated subset of config names to run (default: all of {','.join(CONFIGS.keys())}) -- e.g. --configs regularized to dig into just one.")
+    parser.add_argument("--seeds", default=None, help="Comma-separated seed list to use instead of the default 42,1,7 -- e.g. --seeds 2,3,4,5,6 to add more seeds to an already-run config without repeating 42/1/7.")
     args = parser.parse_args()
     check_results_dir(args.results_file)
 
-    all_pairs = list(itertools.product(CONFIGS.keys(), SEEDS))
+    if args.configs:
+        configs_to_run = [c.strip() for c in args.configs.split(",")]
+        unknown = [c for c in configs_to_run if c not in CONFIGS]
+        if unknown:
+            raise SystemExit(f"Unknown config name(s): {unknown}. Choose from: {list(CONFIGS.keys())}")
+    else:
+        configs_to_run = list(CONFIGS.keys())
+    seeds_to_run = [int(s.strip()) for s in args.seeds.split(",")] if args.seeds else SEEDS
+
+    all_pairs = list(itertools.product(configs_to_run, seeds_to_run))
     completed = load_completed(args.results_file)
     done = {(r.config, int(r.seed)) for r in completed.itertuples()}
     remaining = [(name, seed) for name, seed in all_pairs if (name, seed) not in done]
 
-    if done:
-        print(f"Found {len(done)} already-completed (config, seed) run(s) in {args.results_file} -- skipping those.")
-    print(f"Running {len(remaining)} of {len(all_pairs)} run(s) this invocation ({len(CONFIGS)} configs x {len(SEEDS)} seeds).")
+    already_done_targeted = len(all_pairs) - len(remaining)
+    if already_done_targeted:
+        print(f"Found {already_done_targeted} already-completed targeted (config, seed) run(s) in {args.results_file} -- skipping those.")
+    print(f"Running {len(remaining)} of {len(all_pairs)} targeted run(s) this invocation ({len(configs_to_run)} config(s) x {len(seeds_to_run)} seed(s)).")
 
     for i, (name, seed) in enumerate(remaining, 1):
         print("\n" + "=" * 70)
@@ -130,9 +142,16 @@ def main():
         print(f"Saved this run's result to {args.results_file} (survives a disconnect from here on).")
 
     results = load_completed(args.results_file)
-    if len(results) < len(all_pairs):
+    # Check that THIS invocation's targeted pairs are all present -- not just
+    # that the file has "enough" rows overall, which breaks once --configs/
+    # --seeds narrow the target to a subset smaller than the file's full
+    # history (e.g. digging into just "regularized" after everything else
+    # already finished).
+    done_now = {(r.config, int(r.seed)) for r in results.itertuples()}
+    missing = [p for p in all_pairs if p not in done_now]
+    if missing:
         print(
-            f"\nOnly {len(results)} of {len(all_pairs)} run(s) are done -- "
+            f"\n{len(missing)} of {len(all_pairs)} targeted run(s) still missing -- "
             "re-run this same command to pick up where it left off. Not printing a final summary yet."
         )
         return
