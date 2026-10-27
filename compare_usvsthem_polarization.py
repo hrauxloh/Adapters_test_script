@@ -22,6 +22,12 @@ Menu of what happens when you run this file, in order:
   4. Mean usvsthem_score split by predicted_polarization (0 vs 1) -- a
      simpler, more interpretable view of the same relationship.
   5. Save a scatter plot of usvsthem_score vs polarization_probability.
+  6. The same correlation, repeated for each of the 13 emotion_prob_*
+     columns against polarization_probability (classify_usvsthem.py's
+     auxiliary-task output, same model, same forward pass) -- printed as
+     one sorted table (strongest first) plus a bar chart, so the primary
+     us-vs-them score and the emotion profile can be judged side by side
+     rather than only looking at usvsthem_score in isolation.
 
 Usage:
     python compare_usvsthem_polarization.py --usvsthem-file debate_usvsthem_scores.csv --predictions-file debate_predictions_values_edited.csv
@@ -39,6 +45,7 @@ def main():
     parser.add_argument("--usvsthem-file", default="debate_usvsthem_scores.csv")
     parser.add_argument("--predictions-file", required=True, help="e.g. debate_predictions_values_edited.csv")
     parser.add_argument("--output-plot", default="usvsthem_vs_polarization.png")
+    parser.add_argument("--emotions-output-plot", default="emotions_vs_polarization.png")
     args = parser.parse_args()
 
     usvsthem = pd.read_csv(args.usvsthem_file)
@@ -50,7 +57,9 @@ def main():
         if col not in predictions.columns:
             raise SystemExit(f"--predictions-file is missing a '{col}' column -- was it produced by classify_debates.py/classify_edited_dataset.py?")
 
-    merged = usvsthem[["DebateId", "ItemId", "usvsthem_score"]].merge(
+    emotion_columns = [c for c in usvsthem.columns if c.startswith("emotion_prob_")]
+
+    merged = usvsthem[["DebateId", "ItemId", "usvsthem_score"] + emotion_columns].merge(
         predictions[["DebateId", "ItemId", "polarization_probability", "predicted_polarization"]],
         on=["DebateId", "ItemId"], how="inner",
     )
@@ -92,6 +101,42 @@ def main():
     fig.tight_layout()
     fig.savefig(args.output_plot, dpi=150)
     print(f"\nSaved scatter plot to {args.output_plot}")
+
+    if not emotion_columns:
+        print(f"\nNo emotion_prob_* columns found in {args.usvsthem_file} -- skipping the emotions comparison.")
+        return
+
+    print("\n" + "=" * 70)
+    print("Emotion probabilities vs polarization_probability")
+    print("=" * 70)
+    emotion_rows = []
+    for col in emotion_columns:
+        emotion_r, emotion_p = pearsonr(merged[col], merged["polarization_probability"])
+        emotion_rows.append({
+            "emotion": col.removeprefix("emotion_prob_"),
+            "r": emotion_r,
+            "p": emotion_p,
+        })
+    emotion_results = pd.DataFrame(emotion_rows).sort_values("r", key=abs, ascending=False)
+    print(emotion_results.to_string(index=False, formatters={"r": "{:.4f}".format, "p": "{:.4g}".format}))
+    print(
+        "\n(Same abs(r) bands as above: <0.1 negligible, <0.3 weak, <0.5 moderate, >=0.5 strong. "
+        "Sorted strongest first -- compare the top of this table against usvsthem_score's own "
+        f"r={r:.4f} above to see whether any single emotion tracks polarization_probability as "
+        "closely as the primary us-vs-them score does, or more so.)"
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = ["#d62728" if row_r < 0 else "#1f77b4" for row_r in emotion_results["r"]]
+    ax.barh(emotion_results["emotion"], emotion_results["r"], color=colors)
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.axvline(r, color="green", linestyle="--", linewidth=1, label=f"usvsthem_score (r={r:.3f})")
+    ax.set_xlabel("Pearson r vs polarization_probability")
+    ax.set_title(f"Emotion probabilities vs polarization_probability (n={len(merged)})")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(args.emotions_output_plot, dpi=150)
+    print(f"\nSaved emotions bar chart to {args.emotions_output_plot}")
 
 
 if __name__ == "__main__":
