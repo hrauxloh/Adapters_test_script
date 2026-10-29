@@ -534,3 +534,94 @@ save-every/resume behavior as the other classify scripts:
 python classify_usvsthem.py --input working_dataset_values_edited.csv \
   --model-dir <drive-path>/usvsthem_final_seed42/final
 ```
+
+### Comparing against the polarization predictions
+
+`compare_usvsthem_polarization.py` merges `classify_usvsthem.py`'s output
+against a polarization predictions file on `DebateId`/`ItemId`, reports
+the item-level Pearson correlation (with a plain-language read of its
+size) for `usvsthem_score`, and does the same for each of the 13
+individual `emotion_prob_*` columns:
+
+```bash
+python compare_usvsthem_polarization.py --usvsthem-file debate_usvsthem_scores.csv --predictions-file debate_predictions_values_edited.csv
+```
+
+Run against this project's real data (19,669 matched items): `usvsthem_score`
+has a moderate relationship with `polarization_probability` (r=0.32) — real,
+but not the main story. The individual emotions tell a sharper one:
+`Emotions_Neutral` (r=-0.56), `Disgust` (0.52), `Anger` (0.52), `Contempt`
+(0.51), and `Fear` (0.50) each correlate with polarization *more strongly*
+than `usvsthem_score` itself does. Every other emotion is weak-to-moderately
+*negative*. The pattern: polarized items aren't just "emotional" in general,
+they specifically read as hostile (anger/contempt/disgust/fear) and rarely
+neutral — every other emotional tone is actually depleted in them.
+
+`usvsthem_label_correlation_grid.py` separately asks how the 14 labels (the
+score + 13 emotions) relate to *each other*, independent of polarization —
+a full pairwise correlation matrix + heatmap:
+
+```bash
+python usvsthem_label_correlation_grid.py --input debate_usvsthem_scores.csv
+```
+
+### Clustering the emotions, and building indicator features from the clusters
+
+`usvsthem_emotion_clustering.py` runs average-linkage hierarchical
+clustering on the 12 non-neutral emotions (`usvsthem_score` and
+`Emotions_Neutral` excluded — this is about which emotions co-occur with
+each other, not with the primary score or the "nothing in particular"
+bucket), using `1 - Pearson r` as the distance so mirror-opposite emotions
+end up far apart rather than looking "similar." It sweeps a silhouette
+score across candidate cluster counts to give a quantitative answer to
+"how many clusters," on top of the dendrogram's own merge heights:
+
+```bash
+python usvsthem_emotion_clustering.py --input debate_usvsthem_scores.csv --num-clusters 3
+```
+
+On this project's real data, the chosen 3-cluster split was:
+
+- **Cluster 1 (hostility): Anger, Contempt, Disgust, Fear.** The
+  coherent one — this is the classic hostility/threat emotion bundle, and
+  (per the correlation check above) each of its members individually
+  outpredicts `usvsthem_score`.
+- **Cluster 2 (mixed): Gratitude, Guilt, Happiness, Pride, Relief,
+  Sadness.** The catch-all — no shared theme, mixes positive and negative
+  emotions. Treat as a convenience grouping, not a validated construct.
+- **Cluster 3 (other positive): Hope, Sympathy.** Small, plausible, thin.
+
+`build_emotion_cluster_indicators.py` turns Cluster 1-3 into three
+reusable columns (`emotion_cluster1_hostility`, `emotion_cluster2_mixed`,
+`emotion_cluster3_other_positive` — each just the mean of its cluster's
+`emotion_prob_*` columns per row) on any `classify_usvsthem.py` output, so
+later analysis can use one interpretable hostility score instead of four
+separate, correlated emotion columns. The cluster membership is hardcoded
+to this specific, already-validated 3-cluster result rather than
+re-clustering on every run — edit `CLUSTER_DEFINITIONS` in the script if a
+later clustering run on different/more data gives a different split you
+want to adopt instead:
+
+```bash
+python build_emotion_cluster_indicators.py --input debate_usvsthem_scores.csv --output debate_usvsthem_scores_with_clusters.csv
+```
+
+### Does Whipped predict the us-vs-them score or the emotion clusters?
+
+`analyze_whipped_vs_usvsthem.py` flips the question
+`analyze_item_level_logit.py` asks: `Whipped` stays the single X, but the Y
+is each of `usvsthem_score`, `emotion_cluster1_hostility`,
+`emotion_cluster2_mixed`, and `emotion_cluster3_other_positive` in turn.
+Since these Y's are continuous (0..1 averages of model probabilities, not
+a yes/no label), this fits cluster-robust **OLS** (`Y ~ Whipped`), not
+logit — same cluster-by-`DebateId` robust covariance as
+`analyze_item_level_logit.py`, just a different model family for a
+different kind of outcome. The `Whipped` coefficient is directly the gap
+in that Y's mean between whipped and non-whipped items. Reuses
+`load_item_level` from `analyze_item_level_logit.py` to build `Whipped`
+the same way, then merges in the us-vs-them/cluster columns:
+
+```bash
+python analyze_whipped_vs_usvsthem.py --predictions debate_predictions_values_edited.csv \
+  --features debate_features_edited.csv --usvsthem-file debate_usvsthem_scores_with_clusters.csv
+```
