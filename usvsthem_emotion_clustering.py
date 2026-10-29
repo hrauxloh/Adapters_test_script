@@ -17,10 +17,17 @@ Menu of what happens when you run this file, in order:
      emotion_prob_* columns.
   2. Build the 1-r distance matrix and run average-linkage hierarchical
      clustering on it.
-  3. Cut the resulting tree into --num-clusters flat groups and print
-     which emotions fall into each.
-  4. Save a dendrogram (shows the full merge hierarchy, not just the flat
-     cut) and a correlation heatmap reordered to match the dendrogram's
+  3. Sweep every k from 2 to --max-k and report each one's silhouette
+     score -- a quantitative answer to "how many clusters" instead of
+     just eyeballing the dendrogram, since --num-clusters alone doesn't
+     tell you whether that count is actually a good fit. Also saved as a
+     plot (silhouette vs k).
+  4. Cut the resulting tree into --num-clusters flat groups (printing a
+     note if a different k scored better in step 3) and print which
+     emotions fall into each.
+  5. Save a dendrogram (shows the full merge hierarchy, not just the flat
+     cut -- where an item joins matters as much as which side it ends up
+     on) and a correlation heatmap reordered to match the dendrogram's
      leaf order, so visually adjacent emotions are the ones that cluster.
 
 Usage:
@@ -33,6 +40,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from scipy.spatial.distance import squareform
+from sklearn.metrics import silhouette_score
 
 EXCLUDED_EMOTION_COLUMNS = ["emotion_prob_Emotions_Neutral"]
 
@@ -41,8 +49,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="debate_usvsthem_scores.csv")
     parser.add_argument("--num-clusters", type=int, default=3, help="How many flat clusters to cut the dendrogram into")
+    parser.add_argument("--max-k", type=int, default=8, help="Sweep silhouette score over k=2..max-k to help pick --num-clusters")
     parser.add_argument("--dendrogram-plot", default="emotion_dendrogram.png")
     parser.add_argument("--heatmap-plot", default="emotion_clustered_heatmap.png")
+    parser.add_argument("--silhouette-plot", default="emotion_silhouette_scores.png")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
@@ -71,6 +81,48 @@ def main():
     condensed = squareform(distance.values, checks=False)
 
     link = linkage(condensed, method="average")
+
+    # How many clusters actually fit the data well? Silhouette score answers
+    # this quantitatively for each candidate k: +1 means every item is far
+    # closer to its own cluster than any other, 0 means clusters overlap,
+    # negative means items are probably in the wrong cluster. This is a
+    # direct answer to "how do I know the right number of clusters" rather
+    # than just eyeballing the dendrogram -- though the dendrogram is still
+    # worth checking too, since silhouette can't tell you WHY a k is good.
+    max_k = min(args.max_k, len(short_names) - 1)
+    silhouette_results = []
+    for k in range(2, max_k + 1):
+        labels_k = fcluster(link, t=k, criterion="maxclust")
+        if len(set(labels_k)) < 2:
+            continue  # degenerate: this k collapsed to fewer actual groups
+        score = silhouette_score(distance.values, labels_k, metric="precomputed")
+        silhouette_results.append({"k": k, "silhouette": score})
+
+    if silhouette_results:
+        silhouette_df = pd.DataFrame(silhouette_results)
+        best_row = silhouette_df.loc[silhouette_df["silhouette"].idxmax()]
+        print(f"\nSilhouette score by number of clusters (k=2..{max_k}; higher is better, max +1):")
+        print(silhouette_df.to_string(index=False, formatters={"silhouette": "{:.4f}".format}))
+        print(f"\nBest-scoring k: {int(best_row['k'])} (silhouette={best_row['silhouette']:.4f})")
+        if int(best_row["k"]) != args.num_clusters:
+            print(
+                f"NOTE: this differs from --num-clusters={args.num_clusters} -- the cut below still uses "
+                f"--num-clusters as requested, but k={int(best_row['k'])} scored better. Consider rerunning "
+                f"with --num-clusters {int(best_row['k'])} if you want the flat cut to match."
+            )
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.plot(silhouette_df["k"], silhouette_df["silhouette"], marker="o")
+        ax.axvline(args.num_clusters, color="gray", linestyle="--", linewidth=1, label=f"--num-clusters ({args.num_clusters})")
+        ax.set_xlabel("Number of clusters (k)")
+        ax.set_ylabel("Silhouette score")
+        ax.set_title("Cluster count vs. silhouette score (higher = better-separated)")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(args.silhouette_plot, dpi=150)
+        print(f"Saved silhouette-vs-k plot to {args.silhouette_plot}")
+    else:
+        print("\nCouldn't compute silhouette scores (not enough emotions to try more than one k).")
 
     cluster_ids = fcluster(link, t=args.num_clusters, criterion="maxclust")
     print(f"\n{args.num_clusters} cluster(s):")
