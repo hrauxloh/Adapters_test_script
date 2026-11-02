@@ -641,25 +641,37 @@ through this project's own emotion/us-vs-them signals.
 `analyze_usvsthem_predicts_whipped.py` runs the other direction as a
 **logistic** regression instead: `Whipped` becomes the Y (it's the yes/no
 label here), and each of the same 4 variables is tried as the sole X, one
-at a time -- the same single-feature-comparison approach and cluster-robust
-logit `analyze_item_level_logit.py` uses for `predicted_polarization`,
-reused directly (`load_item_level`/`fit_clustered_logit`), just with a
-different binary outcome:
+at a time:
 
 ```bash
 python analyze_usvsthem_predicts_whipped.py --predictions debate_predictions_values_edited.csv \
   --features debate_features_edited.csv --usvsthem-file debate_usvsthem_scores_with_clusters.csv
 ```
 
-**Watch for quasi-separation here specifically.** `Whipped` is constant
-within a debate, and these X's are item-level but often vary little within
-a debate too (driven by debate-level tone/topic) -- if an X happens to line
-up closely with whether a debate is Whipped, the fit can produce the same
-failure mode documented in `analyze_item_level_logit.py`'s own module
-docstring: a fit that reports "converged" but gives a nonsense odds ratio
-and a confidence interval spanning many orders of magnitude. Confirmed this
-actually happens with a deliberately strong synthetic effect during testing
-(odds ratios in the billions), so the script prints an explicit warning
-whenever an odds ratio comes back outside a plausible 0.05x-20x range --
-trust `pseudo_r2` and the presence of a real relationship in that case, not
-the literal odds ratio number.
+**This one is fit at the debate level, not the item level** -- and that
+took two rounds of fixing to get right, both confirmed by testing side by
+side on synthetic data before trusting either conclusion:
+
+1. The first version reused `analyze_item_level_logit.py`'s item-level,
+   DebateId-clustered approach directly. That's the wrong unit of analysis
+   here specifically: `Whipped` has zero variation within a debate, so
+   fitting at the item level treats ~125 copies of the same debate-level
+   label as semi-independent rows. When an item-level X tracks debate-level
+   tone closely (which these emotion/us-vs-them scores do), the fit can
+   (quasi-)separate -- "converged" but reporting an odds ratio in the
+   billions with a confidence interval spanning many orders of magnitude
+   (confirmed on this project's real data, not just synthetic). The fix:
+   collapse to one row per debate (mean X per debate, `Whipped` unchanged)
+   before fitting an ordinary, non-clustered logit.
+2. That fix isn't complete on its own. With likely well under 20 debates
+   actually Whipped out of ~157, logistic regression is fragile regardless
+   of unit of analysis -- a rare-events problem, confirmed by testing: even
+   a variable deliberately built with **no** relationship to `Whipped`
+   could still produce an extreme odds ratio purely from how few positive
+   cases exist to constrain the fit. So every X is also run through a
+   **Mann-Whitney U test** (do whipped debates' X values rank higher/lower
+   than non-whipped debates', reported as `rank_biserial`, a non-parametric
+   effect size bounded to [-1, 1]) -- this cannot blow up numerically no
+   matter how few debates are Whipped, and the script prints an explicit
+   warning whenever an odds ratio falls outside a plausible 0.05x-20x
+   range, naming it as the column to trust instead.
