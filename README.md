@@ -625,3 +625,41 @@ the same way, then merges in the us-vs-them/cluster columns:
 python analyze_whipped_vs_usvsthem.py --predictions debate_predictions_values_edited.csv \
   --features debate_features_edited.csv --usvsthem-file debate_usvsthem_scores_with_clusters.csv
 ```
+
+Run against this project's real data, all four effect sizes were tiny
+(coefficients of ~0.0005-0.011 on a 0-1 scale) and R2 never exceeded 0.004 --
+two crossed p<0.05, but with this many items (19,627) that threshold catches
+practically-meaningless differences too, and the signs didn't even agree
+across variables, which is a sign of noise rather than a real effect.
+Combined with `Whipped`'s genuine, meaningful relationship with
+`predicted_polarization` found earlier, the conclusion is that being
+whipped raises the odds of a debate being flagged polarized **without**
+going through a pathway of more hostile or us-vs-them emotional language --
+whatever the polarization classifier picks up on here, it isn't operating
+through this project's own emotion/us-vs-them signals.
+
+`analyze_usvsthem_predicts_whipped.py` runs the other direction as a
+**logistic** regression instead: `Whipped` becomes the Y (it's the yes/no
+label here), and each of the same 4 variables is tried as the sole X, one
+at a time -- the same single-feature-comparison approach and cluster-robust
+logit `analyze_item_level_logit.py` uses for `predicted_polarization`,
+reused directly (`load_item_level`/`fit_clustered_logit`), just with a
+different binary outcome:
+
+```bash
+python analyze_usvsthem_predicts_whipped.py --predictions debate_predictions_values_edited.csv \
+  --features debate_features_edited.csv --usvsthem-file debate_usvsthem_scores_with_clusters.csv
+```
+
+**Watch for quasi-separation here specifically.** `Whipped` is constant
+within a debate, and these X's are item-level but often vary little within
+a debate too (driven by debate-level tone/topic) -- if an X happens to line
+up closely with whether a debate is Whipped, the fit can produce the same
+failure mode documented in `analyze_item_level_logit.py`'s own module
+docstring: a fit that reports "converged" but gives a nonsense odds ratio
+and a confidence interval spanning many orders of magnitude. Confirmed this
+actually happens with a deliberately strong synthetic effect during testing
+(odds ratios in the billions), so the script prints an explicit warning
+whenever an odds ratio comes back outside a plausible 0.05x-20x range --
+trust `pseudo_r2` and the presence of a real relationship in that case, not
+the literal odds ratio number.
