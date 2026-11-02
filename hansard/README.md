@@ -152,6 +152,49 @@ divisions = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive
 votes = pd.concat([pd.read_csv(f) for f in glob.glob("/content/drive/MyDrive/hansard_divisions/votes_*.csv")])
 ```
 
+## Second Reading debates (1945-present)
+
+A separate, unrelated question got asked of hansard-api: can debates be
+filtered down to Bill Second Readings only? **No confirmed structured
+filter exists for this** — the debate search endpoint's confirmed fields
+(`DebateSection`, `SittingDate`, `House`, `Title`, `Rank`,
+`DebateSectionExtId`) have no legislative-stage field at all, so "Second
+Reading" has to be a *text* filter on `Title`, not an API-native category.
+(Trying to reach `hansard-api.parliament.uk` live to double-check this
+hit the same network block as `manifesto-project.wzb.eu` earlier in this
+project — blocked by this environment's own allowlist, not the API.)
+
+`collect_second_readings.py` does the best achievable version of this:
+- Server-side, narrows each month's pull with
+  `queryParameters.searchTerm=Second Reading` (searchTerm's real matching
+  behaviour — title-only vs. full debate text — has never been confirmed
+  against a live response).
+- Client-side (the actual, authoritative filter): keeps only results
+  whose `Title` contains "second reading" case-insensitively, and prints
+  how many server-returned results got dropped by that check each month —
+  a high drop rate would mean searchTerm is matching on more than just
+  the title.
+- Same month-chunking + per-month resumable file (`second_readings_YYYY-MM.csv`)
+  pattern as `collect_divisions.py`, for the same confirmed reason (this
+  API's search silently caps how far a big date range's pagination
+  reaches).
+- Tested offline (mocked API responses): pagination-until-empty-page,
+  the title filter keeping/dropping the right rows, and the resume logic
+  making zero network calls on an already-done month.
+
+```bash
+pip install requests pandas
+python collect_second_readings.py --start-date 1945-01-01 --end-date 2026-11-02 --output-dir second_readings
+```
+
+**Not yet verified against a live response** (same caveat as everything
+else in this file marked unconfirmed): whether `searchTerm` actually
+narrows anything, whether omitting `--house` returns both Houses or just
+one, and how many of the kept rows are genuine Second Readings vs.
+false-positive title matches. Spot-check a sample of the output's
+`Title` column against the real Hansard record before trusting the full
+1945–present run.
+
 ## Next steps (not started)
 
 Once we can see a real division record and the briefing spreadsheet's
